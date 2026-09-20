@@ -186,6 +186,8 @@ STAGE_MILD_TEXT = {
 CONFIDENCE_NOTE = {
     "consumer_sentiment": "Given half the weight it would otherwise get: this survey measures households' worries about prices more than investors' appetite for risk, "
                           "it changed from phone to online interviews in 2024 (so recent readings are not comparable with older ones), and it is near its lowest level on record.",
+    "credit_spread_level": "Given half the weight it would otherwise get: this is the same series as the lending gauge's main reading, so counted in full "
+                           "this gauge would mostly repeat that one instead of giving a separate view of distress.",
     "profit_share_of_gdp": "Given half the weight it would otherwise get: company profits have taken a much bigger share of the economy since about 2005, so this "
                            "reading sits near the top of its range most of the time and says little about where we are in the cycle.",
 }

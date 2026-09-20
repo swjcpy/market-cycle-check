@@ -768,6 +768,7 @@ def test_notice_reaches_the_policy_card_and_the_top_banner(monkeypatch):
     assert out["notices"][0]["key"] == "policy"
     by = {c["key"]: c for c in out["cycles"]}
     assert "raised its overnight lending rate" in by["policy"]["notice"] and by["credit"]["notice"] is None
+    assert by["policy"]["direction_word"].endswith("(rate just raised)") and "rate just" not in by["credit"]["direction_word"]
     page = server.render(json.loads(json.dumps(out, default=str)), "now", None)
     assert page.count("raised its overnight lending rate") == 2 and "Recent change" in page          # top banner + the policy card
     out["notices"][0]["text"] = "<b>x</b>"
@@ -856,7 +857,9 @@ def test_indicator_weights_and_shared_vote_text(monkeypatch):
     assert sent["weight"] == 20 and sent["low_confidence"] and "half the weight it would otherwise get" in sent["low_confidence"]
     assert by["profits"]["profit_share_of_gdp"]["weight"] == 33 and by["profits"]["profit_growth_yoy"]["weight"] == 67
     assert by["profits"]["profit_share_of_gdp"]["low_confidence"] and "since about 2005" in by["profits"]["profit_share_of_gdp"]["low_confidence"] and "near the top of its range" in by["profits"]["profit_share_of_gdp"]["low_confidence"]
-    assert all(i["low_confidence"] is None for k, inds in by.items() for n, i in inds.items() if n not in ("consumer_sentiment", "profit_share_of_gdp"))
+    assert by["distressed"]["credit_spread_level"]["weight"] == 33 and by["distressed"]["business_loan_chargeoffs"]["weight"] == 67
+    assert "same series as the lending gauge" in by["distressed"]["credit_spread_level"]["low_confidence"]
+    assert all(i["low_confidence"] is None for k, inds in by.items() for n, i in inds.items() if n not in ("consumer_sentiment", "profit_share_of_gdp", "credit_spread_level"))
     assert by["policy"]["curve_10y_minus_3m"]["weight"] == 50 and by["policy"]["curve_10y_minus_3m"]["shares_with"] == []
     r = by["policy"]["real_policy_rate"]
     assert r["weight"] == 17 and sorted(r["shares_with"]) == sorted([plain.INDICATOR_INFO["policy_rate_12m_change"][0], plain.INDICATOR_INFO["policy_rate_3m_change"][0]])
@@ -878,3 +881,14 @@ def test_page_explains_a_reduced_weight_reading():
     assert "Given half the weight it would otherwise get" in page and "counts for 20% of this gauge" in page and "counts for 33% of this gauge" in page
     assert "of this gauge. Given half the weight" in server.weight_text(dict(weight=20, shares_with=[], low_confidence="Given half the weight: x"))
     assert "&lt;i&gt;" in server.weight_text(dict(weight=20, shares_with=[], low_confidence="<i>x</i>")) and "<i>" not in server.weight_text(dict(weight=20, shares_with=[], low_confidence="<i>x</i>"))
+
+
+def test_a_rate_cut_notice_labels_the_policy_arrow_too(monkeypatch):
+    frames = {k: _fake_frame(k, 0.0) for k in CYCLES}
+    monkeypatch.setattr(summary, "compute_cycle", lambda n, r=False, t=None: frames[n])
+    monkeypatch.setattr(summary, "track_record", lambda s, c: None); monkeypatch.setattr(summary, "_health", lambda n: [])
+    monkeypatch.setattr(summary, "fetch_series", lambda sid: _dff([4.00] * 50 + [3.75] * 11))
+    real = summary._rate_notice
+    monkeypatch.setattr(summary, "_rate_notice", lambda: real(TODAY))
+    by = {c["key"]: c for c in summary.build(record_events=False)["cycles"]}
+    assert by["policy"]["direction_word"] == "steady (rate just cut)"

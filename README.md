@@ -43,7 +43,7 @@ returns: each independent underlying data series gets an equal share, and readin
 three readings derived from the fed funds rate) split one share (`Indicator.family`, `engine.cycle_weights`). This is provenance,
 not a measured optimum: some readings still overlap partly (e.g. the term premium and the 10-year yield).
 
-Judgement calls (each pinned in a test and explained next to the reading on the page; both use `Indicator.confidence = 0.5`):
+Judgement calls (each pinned in a test and explained next to the reading on the page; all use `Indicator.confidence = 0.5`):
 (1) consumer sentiment counts at half weight. It measures households' worries about prices more than investors' appetite for risk,
 the University of Michigan moved from phone to online interviews in 2024 (recent readings are not comparable with earlier
 ones), and it sits at a record low, which saturates its score. Depending on its weight the investor-mood reading ranged from
@@ -52,9 +52,11 @@ The value 0.5 is not precise: the Warm band holds for any confidence from about 
 reading moves. It applies to all history, although the problems are recent (a limitation).
 (2) The profit share of GDP also counts at half weight: it stepped up around 2005 (5-7% to 10-13%), so against its full history it
 sits near the top of its range in about three quarters of quarters since 2005 and would otherwise carry half of the profits gauge.
+(3) In the distressed-debt gauge the Baa spread counts at half weight: it is the same series as the lending gauge's main reading,
+so in full the gauge would mostly echo that one.
 
 Criterion for a confidence below 1 (stated so it is not ad hoc): a documented structural break or measurement problem in the
-series AND a score pinned near its extreme today. Other saturated readings were handled differently or left alone: CAPE has a
+series, or a reading that repeats another gauge's main input, AND a score pinned near its extreme today. Other saturated readings were handled differently or left alone: CAPE has a
 30-year window for its slow drift; the term premium and price-to-rent are not pinned today. Side effect: the hindsight anchor for the
 2006 profits boom moved (score 0.90, Warm, instead of 1.17).
 

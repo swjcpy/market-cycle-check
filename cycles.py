@@ -145,6 +145,8 @@ CYCLES = {
         Indicator("business_loan_chargeoffs", "fred:CORBLACBS", "quarterly", sign=-1, min_history=20, lag_months=6, ffill_limit=4),
         # how much more risky companies pay than the government (Baa yield minus 10-year Treasury): wide = distress.
         # This is the same market signal as the credit cycle's spread: distressed debt is downstream of credit, so they overlap.
-        Indicator("credit_spread_level", "fred:BAA10Y", "daily", sign=-1, min_history=60),
+        # confidence 0.5: this is the SAME series as the lending gauge's main reading, so counted in full it would make this gauge
+        # mostly an echo of that one instead of a separate view.
+        Indicator("credit_spread_level", "fred:BAA10Y", "daily", sign=-1, min_history=60, confidence=0.5),
     )),
 }

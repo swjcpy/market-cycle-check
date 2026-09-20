@@ -365,6 +365,9 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
     notices = [n for n in (_rate_notice(),) if n]
     for c in cycles:
         c["notice"] = next((n["text"] for n in notices if n["key"] == c["key"]), None)
+        n = next((n for n in notices if n["key"] == c["key"]), None)
+        if n:   # the gauge's arrow is slow by design (it compares with 6 months ago): say plainly that a change just happened
+            c["direction_word"] = f"{c['direction_word']} (rate just {'raised' if n['change'] > 0 else 'cut'})"
     health = [r for n in plain.ORDER for r in _health(n)]
     for c in cycles:   # how fresh the underlying data really is (the score date can be newer than the slowest input)
         rows = [r for r in health if r["cycle"] == c["key"]]

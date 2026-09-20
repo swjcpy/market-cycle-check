@@ -176,7 +176,7 @@ def test_config_pins_bonds_parameters():
 def test_config_pins_distressed_parameters():
     co, sp = CYCLES["distressed"].indicators
     assert (co.source, co.freq, co.sign, co.min_history, co.lag_months, co.ffill_limit) == ("fred:CORBLACBS", "quarterly", -1, 20, 6, 4)
-    assert (sp.source, sp.freq, sp.sign, sp.transform, sp.min_history, sp.lag_months) == ("fred:BAA10Y", "daily", -1, "level", 60, 0)
+    assert (sp.source, sp.freq, sp.sign, sp.transform, sp.min_history, sp.lag_months, sp.confidence) == ("fred:BAA10Y", "daily", -1, "level", 60, 0, 0.5)
 
 
 def test_config_pins_credit_parameters():
@@ -1161,5 +1161,5 @@ def test_confidence_scales_a_weight_and_weights_are_renormalised():
 def test_every_reduced_confidence_is_pinned_and_explained():
     import plain
     reduced = {i.name: i.confidence for c in CYCLES.values() for i in c.indicators if i.confidence < 1}
-    assert reduced == {"consumer_sentiment": 0.5, "profit_share_of_gdp": 0.5}                # any change here is a deliberate, reviewed decision
+    assert reduced == {"consumer_sentiment": 0.5, "profit_share_of_gdp": 0.5, "credit_spread_level": 0.5}   # any change here is a deliberate, reviewed decision
     assert set(reduced) == set(plain.CONFIDENCE_NOTE) and all(len(t) > 60 for t in plain.CONFIDENCE_NOTE.values())

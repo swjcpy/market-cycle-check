@@ -892,3 +892,150 @@ def test_a_rate_cut_notice_labels_the_policy_arrow_too(monkeypatch):
     monkeypatch.setattr(summary, "_rate_notice", lambda: real(TODAY))
     by = {c["key"]: c for c in summary.build(record_events=False)["cycles"]}
     assert by["policy"]["direction_word"] == "steady (rate just cut)"
+
+
+# ---- S&P 500 price panel ------------------------------------------------------------------------------------------
+def _daily_prices(start="1994-06-01", end="2026-09-18"):
+    idx = pd.bdate_range(start, end)
+    return pd.Series(100.0 * 1.0004 ** np.arange(len(idx)), index=idx)
+
+
+def test_market_series_is_monthly_since_history_start_and_ends_on_the_latest_day(monkeypatch):
+    px = _daily_prices()
+    monkeypatch.setattr(summary, "fetch_yahoo_daily", lambda s: px)
+    m = summary._market()
+    dates = [p[0] for p in m["points"]]
+    assert m["name"].startswith("S&P 500") and dates[0] >= "1995-01-01" and dates == sorted(dates) and len(set(dates)) == len(dates)
+    assert dates[-1] == "2026-09-18" and m["points"][-1][1] == round(float(px.iloc[-1]), 1)          # the open month is its latest day
+    assert dates[-2] == "2026-08-31" and all(p[0][-2:] in ("28", "29", "30", "31") for p in m["points"][:-1])   # earlier months: month-end closes
+    assert 350 < len(dates) < 400 and all(isinstance(p[1], float) and p[1] > 0 for p in m["points"])
+
+
+def test_market_series_failure_and_short_data_return_none(monkeypatch):
+    monkeypatch.setattr(summary, "fetch_yahoo_daily", mock.Mock(side_effect=RuntimeError("down")))
+    assert summary._market() is None
+    monkeypatch.setattr(summary, "fetch_yahoo_daily", lambda s: _daily_prices("2026-08-01", "2026-09-18"))
+    assert summary._market() is None                                                                # under two years of data
+
+
+def test_build_includes_the_market_and_survives_its_absence(monkeypatch):
+    frames = {k: _fake_frame(k, 0.0) for k in CYCLES}
+    monkeypatch.setattr(summary, "compute_cycle", lambda n, r=False, t=None: frames[n])
+    monkeypatch.setattr(summary, "track_record", lambda s, c: None); monkeypatch.setattr(summary, "_health", lambda n: [])
+    monkeypatch.setattr(summary, "fetch_yahoo_daily", lambda s: _daily_prices())
+    assert summary.build(record_events=False)["market"]["points"]
+    monkeypatch.setattr(summary, "fetch_yahoo_daily", mock.Mock(side_effect=RuntimeError("down")))
+    assert summary.build(record_events=False)["market"] is None
+
+
+def _mk_market(n=381):
+    idx = pd.date_range("1995-01-31", periods=n, freq="ME")
+    return dict(name="S&P 500, dividends included", points=[[d.strftime("%Y-%m-%d"), round(600 * 1.009 ** i, 1)] for i, d in enumerate(idx)])
+
+
+def test_price_panel_is_aligned_log_scaled_and_labelled():
+    hist = [[d.strftime("%Y-%m-%d"), 0.5] for d in pd.date_range("1995-01-31", periods=381, freq="ME")]
+    top, bottom = server.svg_history(hist, [["2001-04-01", "2001-11-30"]], "x"), server.svg_market(_mk_market(), hist, [["2001-04-01", "2001-11-30"]], "x")
+    import re
+    last_top = re.findall(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5"', top)[0]
+    last_pts = re.findall(r'polyline points="([^"]+)"', bottom)[0].split()[-1].split(",")[0]
+    assert last_top == last_pts                                                                    # same x for the same date
+    assert 'viewBox="0 0 640 110"' in bottom and 'class="chart mchart"' in bottom and "logarithmic" in bottom
+    assert ">1,000<" in bottom and ">10,000<" in bottom and ">500<" not in bottom                  # ticks only inside the range
+    ys = [float(p.split(",")[1]) for p in re.findall(r'polyline points="([^"]+)"', bottom)[0].split()]
+    assert ys[0] > ys[-1]                                                                            # rising price draws upward
+    # log scale: equal % moves are equal distances (600 -> 1200 spans the same as 1200 -> 2400)
+    m2 = dict(name="x", points=[["1995-01-31", 600.0], ["2005-01-31", 1200.0], ["2015-01-31", 2400.0], ["2025-01-31", 4800.0]])
+    h2 = [["1995-01-31", 0.0], ["2025-01-31", 0.0]]
+    pts = [float(p.split(",")[1]) for p in re.findall(r'polyline points="([^"]+)"', server.svg_market(m2, h2, [], "y"))[0].split()]
+    assert abs((pts[0] - pts[1]) - (pts[1] - pts[2])) < 0.2 and abs((pts[1] - pts[2]) - (pts[2] - pts[3])) < 0.2
+
+
+def test_price_panel_degrades_gracefully():
+    hist = [["2020-01-31", 0.0], ["2021-01-31", 0.0]]
+    assert server.svg_market(None, hist, [], "x") == "" and server.svg_market({"points": []}, hist, [], "x") == ""
+    assert server.svg_market(_mk_market(), [["2020-01-31", 0.0]], [], "x") == ""                     # one-point gauge history
+    assert server.svg_market({"points": [["1990-01-31", 5.0], ["1991-01-31", 6.0]]}, hist, [], "x") == ""   # no points inside the gauge's range
+    assert server.chart_pair(hist, [], "x", None) == server.svg_history(hist, [], "x")               # no market: exactly the old chart
+    weird = dict(name="<script>x</script>", points=_mk_market()["points"])
+    out = server.svg_market(weird, [[d, 0.0] for d, _ in weird["points"][::40]], [], "u<>")
+    assert "<script>x" not in out and "&lt;script&gt;" in out and 'data-uid="u&lt;&gt;"' in out
+
+
+def test_every_chart_gets_a_price_panel_and_one_shared_data_tag():
+    s = json.loads(json.dumps(real_summary()))
+    s["market"] = _mk_market()
+    page = server.render(s, "now", None)
+    assert page.count("chart mchart") == 9 and page.count('id="mkt-data"') == 1 and page.count("what the SPY fund follows") == 9
+    assert page.count("in our tests none did reliably") == 9
+    s["market"] = None
+    page2 = server.render(s, "now", None)
+    assert "mchart" not in page2.replace("svg.mchart", "").replace(".mchart", "") and 'id="mkt-data"' not in page2
+    del s["market"]
+    assert "Market Cycle Check" in server.render(s, "now", None)                                       # an old summary.json without the key still renders
+    evil = json.loads(json.dumps(real_summary())); evil["market"] = dict(name="n", points=[["1995-01-31</script><b>", 1.0], ["1996-01-31", 2.0]])
+    assert "</script><b>" not in server.market_data(evil["market"]) and server.market_data(None) == "" and server.market_data({"points": []}) == ""
+
+
+def test_hover_script_syncs_the_two_panels_and_shows_the_price():
+    js = server.JS
+    assert "mkt-data" in js and "mval(" in js and ".mvline" in js and "S&P 500 " in js and "max-width:600px" in server.CSS
+
+
+def test_panels_share_padding_and_the_hover_script_uses_it():
+    import re
+    hist = [[d.strftime("%Y-%m-%d"), 0.0] for d in pd.date_range("1995-01-31", periods=381, freq="ME")]
+    top, bottom = server.svg_history(hist, [], "x"), server.svg_market(_mk_market(), hist, [], "x")
+    assert 'x="60"' in top and 'text x="54"' in top                                            # gauge panel: labels right-anchored at pad-6
+    first_x = float(re.findall(r'polyline points="([^"]+)"', bottom)[0].split()[0].split(",")[0])
+    assert first_x == 60.0                                                                       # the price line starts at the shared left pad
+    page = server.render(real_summary(), "now", None)
+    assert "padL=60,padR=12" in page and "__PADL__" not in page
+
+
+def test_price_ticks_margins_clipping_and_malformed_points():
+    import re
+    hist = [["2000-01-31", 0.0], ["2010-01-31", 0.0]]
+    def render(vals, hist=hist):
+        m = dict(name="x", points=[[f"{2000 + i}-01-31", v] for i, v in enumerate(vals)])
+        return server.svg_market(m, hist, [], "u")
+    out = render([1100.0, 1200.0, 1800.0, 1900.0])                                               # range 1100-1900 (x0.92 / x1.08): 1,000 out, 2,000 in
+    assert ">2,000<" in out and ">1,000<" not in out
+    edge = render([1000.0 / 0.92 + 1, 1100.0, 1150.0])                                           # min*0.92 barely above 1000: no 1,000 tick
+    assert ">1,000<" not in edge
+    ys = [float(p.split(",")[1]) for p in re.findall(r'polyline points="([^"]+)"', render([1000.0, 2000.0]))[0].split()]
+    assert 8 < ys[1] < ys[0] < 104 and ys[1] - 8 > 0.5                                             # both points sit inside the panel with a margin
+    m = dict(name="x", points=[["2001-01-31", 1000.0], ["2020-01-31", 5000.0], ["2005-01-31", 1500.0], ["2007-01-31", 1800.0]])
+    inside = re.findall(r'polyline points="([^"]+)"', server.svg_market(m, hist, [], "u"))[0].split()
+    assert len(inside) == 3                                                                      # the point after the gauge's last date is clipped
+    bad = dict(name="x", points=[["nope", 1.0], [None, 2.0], ["2001-01-31"], ["2002-01-31", "abc"], ["2003-01-31", float("nan")], ["2004-01-31", float("inf")],
+                                 ["2005-01-31", -5.0], ["2006-01-31", 1000.0], ["2007-01-31", 1200.0]])
+    assert len(re.findall(r'polyline points="([^"]+)"', server.svg_market(bad, hist, [], "u"))[0].split()) == 2
+
+
+def test_chart_pair_survives_a_broken_market_and_caps_huge_series():
+    hist = [[d.strftime("%Y-%m-%d"), 0.0] for d in pd.date_range("1995-01-31", periods=381, freq="ME")]
+    for broken in ("junk", 5, [1, 2, 3], {"points": 5}, {"points": [[1]]}, {"points": None}):
+        assert server.chart_pair(hist, [], "x", broken) == server.svg_history(hist, [], "x")     # falls back to the plain chart
+    s = json.loads(json.dumps(real_summary())); s["market"] = "junk"
+    assert "Market Cycle Check" in server.render(s, "now", None)
+    huge = dict(name="x", points=[[d.strftime("%Y-%m-%d"), 100.0 + i] for i, d in enumerate(pd.date_range("1995-01-31", periods=5000, freq="D"))])
+    h2 = [["1995-01-31", 0.0], ["2008-12-31", 0.0]]
+    import re
+    n = len(re.findall(r'polyline points="([^"]+)"', server.svg_market(huge, h2, [], "u"))[0].split())
+    assert 100 < n <= server.MAX_MARKET_POINTS
+
+
+def test_tooltip_shows_the_market_date_when_it_differs_and_lookup_rule_is_latest_point_not_after():
+    js = server.JS
+    assert "M[m][0]<=d" in js and "mv[0]<p[0]" in js and "mv[0].slice(0,10)" in js
+
+
+def test_tick_upper_bound_direct_guard_and_the_price_panel_try_block(monkeypatch):
+    hist = [["2000-01-31", 0.0], ["2010-01-31", 0.0]]
+    m = dict(name="x", points=[["2001-01-31", 1100.0], ["2002-01-31", 1200.0], ["2003-01-31", 1700.0]])
+    assert ">2,000<" not in server.svg_market(m, hist, [], "u")                                   # 2,000 is above 1700 x 1.08: no tick
+    for junk in ("junk", 5, [1, 2, 3], ["a", "b"]):
+        assert server.svg_market(junk, hist, [], "u") == ""                                        # direct calls validate their input too
+    monkeypatch.setattr(server, "svg_market", mock.Mock(side_effect=RuntimeError("boom")))
+    assert server.chart_pair(hist, [], "u", _mk_market()) == server.svg_history(hist, [], "u")    # any failure falls back to the plain chart

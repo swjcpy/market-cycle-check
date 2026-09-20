@@ -34,6 +34,8 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   health, change events) and writes `data/summary.json`. `plain.py` holds all the plain-language text.
 - `server.py` (stdlib only, run by the system `/usr/bin/python3` so it is already allowed through the macOS firewall)
   serves the page and re-runs the build in the project venv every 6 hours.
+- Under every gauge chart (and the headline chart) a second panel shows the S&P 500 with dividends (what the SPY fund follows) on
+  its own log scale, same time axis and recession bands, with a shared hover crosshair. It is context only and never feeds a score.
 - `validate.py <cycle>` tests a cycle against forward S&P 500 returns (`data/validation_<cycle>.txt`).
 
 ## Weights

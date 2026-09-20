@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import logging
 import logging.handlers
 import socketserver
@@ -47,11 +48,15 @@ esc = html.escape
 
 
 # ---------------------------------------------------------------------------------------------------- charts
+PAD_L, PAD_R = 60, 12          # shared by both panels and the hover script so a date has the same x everywhere
+MAX_MARKET_POINTS = 1500       # a sane cap: the series is repeated in every chart
+
+
 def svg_history(hist: list, recessions: list, uid: str, w: int = 640, h: int = 170) -> str:
     """Score history as inline SVG. Hover data is embedded as data-h for the tiny tooltip script."""
     if len(hist) < 2:
         return ""
-    pad_l, pad_r, pad_t, pad_b = 46, 12, 10, 22
+    pad_l, pad_r, pad_t, pad_b = PAD_L, PAD_R, 10, 22
     t0, t1 = datetime.fromisoformat(hist[0][0]).timestamp(), datetime.fromisoformat(hist[-1][0]).timestamp()
     if t1 <= t0:
         return ""
@@ -78,6 +83,60 @@ def svg_history(hist: list, recessions: list, uid: str, w: int = 640, h: int = 1
     parts.append(f'<g class="hover" style="display:none"><line class="vline" y1="{pad_t}" y2="{h - pad_b}" stroke="var(--ink2)" stroke-width="1"/>'
                  f'<circle class="dot" r="4" fill="var(--line)" stroke="var(--surface)" stroke-width="2"/></g></svg>')
     return "".join(parts)
+
+
+def svg_market(market: dict | None, hist: list, recessions: list, uid: str, w: int = 640, h: int = 110) -> str:
+    """The S&P 500 panel under a gauge chart: same time axis and recession bands, its OWN log scale (never a dual axis)."""
+    if not isinstance(market, dict) or len(hist) < 2 or not isinstance(market.get("points"), list) or len(market["points"]) < 2:
+        return ""
+    pad_l, pad_r, pad_t, pad_b = PAD_L, PAD_R, 8, 6
+    d0, d1 = hist[0][0], hist[-1][0]
+    t0, t1 = datetime.fromisoformat(d0).timestamp(), datetime.fromisoformat(d1).timestamp()
+    pts = []
+    for p in market["points"]:
+        try:
+            d, v = str(p[0]), float(p[1])
+            datetime.fromisoformat(d)
+        except (TypeError, ValueError, IndexError):
+            continue                                       # skip a malformed point instead of failing the whole page
+        if d0 <= d <= d1 and v > 0 and math.isfinite(v):
+            pts.append((d, v))
+    if len(pts) > MAX_MARKET_POINTS:
+        pts = pts[:: -(-len(pts) // MAX_MARKET_POINTS)]
+    if t1 <= t0 or len(pts) < 2:
+        return ""
+    X = lambda d: pad_l + (datetime.fromisoformat(d).timestamp() - t0) / (t1 - t0) * (w - pad_l - pad_r)  # noqa: E731
+    lo, hi = math.log(min(v for _, v in pts) * 0.92), math.log(max(v for _, v in pts) * 1.08)
+    Y = lambda v: pad_t + (hi - math.log(v)) / (hi - lo) * (h - pad_t - pad_b)  # noqa: E731
+    parts = [f'<svg class="chart mchart" viewBox="0 0 {w} {h}" role="img" data-uid="{esc(uid)}" '
+             f'aria-label="{esc(str(market.get("name", "Stock market")))} over the same period, on a logarithmic scale">']
+    for a, b in recessions:
+        xa, xb = max(X(a), pad_l), min(X(b), w - pad_r)
+        if xb > xa:
+            parts.append(f'<rect x="{xa:.1f}" y="{pad_t}" width="{xb - xa:.1f}" height="{h - pad_t - pad_b}" fill="var(--ink)" opacity=".10"/>')
+    lows, highs = min(v for _, v in pts), max(v for _, v in pts)
+    for tick in (500, 1000, 2000, 5000, 10000, 20000, 50000):
+        if lows * 0.92 < tick < highs * 1.08:
+            parts.append(f'<line x1="{pad_l}" x2="{w - pad_r}" y1="{Y(tick):.1f}" y2="{Y(tick):.1f}" stroke="var(--grid)"/>')
+            parts.append(f'<text x="{pad_l - 6}" y="{Y(tick) + 4:.1f}" text-anchor="end" class="axis">{tick:,}</text>')
+    line = " ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in pts)
+    parts.append(f'<polyline points="{line}" fill="none" stroke="var(--ink2)" stroke-width="1.6" stroke-linejoin="round"/>')
+    parts.append(f'<g class="mhover" style="display:none"><line class="mvline" y1="{pad_t}" y2="{h - pad_b}" stroke="var(--ink2)" stroke-width="1"/></g></svg>')
+    return "".join(parts)
+
+
+def chart_pair(hist: list, recessions: list, uid: str, market: dict | None) -> str:
+    """The gauge chart with, when price data exists, the S&P 500 panel directly underneath (aligned)."""
+    top = svg_history(hist, recessions, uid)
+    try:
+        bottom = svg_market(market, hist, recessions, uid)
+    except Exception:  # noqa: BLE001  the price panel is optional context: never let it take the chart (or page) down
+        log.exception("price panel failed for %s", uid)
+        bottom = ""
+    if not bottom:
+        return top
+    return (top + bottom + '<p class="sub mcap">Lower chart: the S&amp;P 500 stock index with dividends (what the SPY fund follows), on its own scale. '
+            'Moving together does not mean a gauge predicts the market: in our tests none did reliably.</p>')
 
 
 def thermometer(score: float | None, big: bool = False) -> str:
@@ -119,6 +178,13 @@ def month_name(iso: str | None) -> str:
         return "?"
 
 
+def market_data(market: dict | None) -> str:
+    """The price series once, for the hover tooltips of every chart (JSON in a script tag: nothing to escape but '<')."""
+    if not isinstance(market, dict) or not isinstance(market.get("points"), list) or not market["points"]:
+        return ""
+    return '<script type="application/json" id="mkt-data">' + json.dumps(market["points"]).replace("<", "\\u003c") + "</script>"
+
+
 def notice_html(c: dict) -> str:
     return f'<p class="limit"><b>Recent change.</b> {esc(str(c["notice"]))}</p>' if c.get("notice") else ""
 
@@ -150,15 +216,15 @@ def hotter_text(i: dict) -> str:
     return "" if i["hotter_than"] is None else "warmer than %d%% of past months" % i["hotter_than"]
 
 
-def safe_card(c: dict) -> str:
+def safe_card(c: dict, market: dict | None = None) -> str:
     try:
-        return render_card(c)
+        return render_card(c, market)
     except Exception:  # noqa: BLE001  one bad card must not take the whole page down
         log.exception("card %s failed to render", c.get("key"))
         return '<article class="card"><h3>%s</h3><p>This gauge could not be displayed right now.</p></article>' % esc(str(c.get("title", "?")))
 
 
-def render_card(c: dict) -> str:
+def render_card(c: dict, market: dict | None = None) -> str:
     if c["score"] is None:
         return f'<article class="card"><h3>{esc(c["icon"])} {esc(c["title"])}</h3><p>No data yet.</p></article>'
     lean = "Leaning that way, though not extreme. " if c["band"] in ("warm", "cool") else ""
@@ -186,7 +252,7 @@ def render_card(c: dict) -> str:
       <h4>The readings behind it</h4>
       <table class="ind stack"><thead><tr><th>Reading</th><th class="num">Now</th><th class="num">Verdict</th></tr></thead><tbody>{rows}</tbody></table>
       <h4>History since 1995</h4>
-      {svg_history(c["history"], c["recessions"], c["key"])}
+      {chart_pair(c["history"], c["recessions"], c["key"], market)}
       <p class="sub">Grey bands are recessions. Score as of {esc(c["as_of"] or "?")}.{partial} {data_line(c)}</p>
       <p class="limit"><b>Limits.</b> {esc(c["limit"])}</p>
     </div>
@@ -242,7 +308,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
     stale = [r for r in s["health"] if r["stale"]]
     if stale:
         banner += f'<div class="banner warn"><b>{len(stale)} data feed(s) look out of date</b> (see the bottom of the page). Readings that use them may be stale.</div>'
-    cards = "".join(safe_card(c) for c in s["cycles"])
+    cards = "".join(safe_card(c, s.get("market")) for c in s["cycles"])
     ag = s["agree"]
     notes = "".join(f"<li>{esc(n)}</li>" for n in ag["notes"])
     groups = "".join(f'<div><b>{lab}</b><br><span class="sub">{esc(", ".join(ag["groups"][k]) or "none")}</span></div>'
@@ -273,7 +339,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
   <p class="drivers"><b>What is driving this:</b> {drivers}</p>
   <div class="cols"><div><h4>Sensible habits in any market</h4><ul>{do}</ul></div><div><h4>What to be careful about</h4><ul>{avoid}</ul></div></div>
   <p class="sub"><b>{esc(h["not_a_signal"])}</b> Past readings of these gauges did not reliably predict what stocks did next.</p>
-  {svg_history(h["history"], h["recessions"], "headline")}
+  {chart_pair(h["history"], h["recessions"], "headline", s.get("market"))}
   <p class="sub">The headline combines two gauges (lending and investor mood). Grey bands are recessions.</p>
 </section>
 {safe_track(h)}
@@ -292,7 +358,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
 <p class="sub">Monthly and quarterly numbers are published weeks or months late; that is normal.</p></details></section>
 <footer><p>{esc(s["disclaimer"])}</p></footer>
 </main>
-<script>{JS}</script></body></html>'''
+{market_data(s.get("market"))}<script>{JS.replace("__PADL__", str(PAD_L)).replace("__PADR__", str(PAD_R))}</script></body></html>'''
 
 
 CSS = """
@@ -319,7 +385,7 @@ details>summary{list-style:none;cursor:pointer}details>summary::-webkit-details-
 details[open] .more{display:none}.detail{margin-top:10px;border-top:1px solid var(--bd);padding-top:6px}
 table.ind{width:100%;border-collapse:collapse;font-size:.9rem}.ind th{font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;text-align:left;color:var(--ink2);border-bottom:1px solid var(--bd);padding:6px 4px}
 .ind td{padding:8px 4px;border-bottom:1px solid var(--bd);vertical-align:top}.num{text-align:right}.ind .now td{font-weight:700;background:color-mix(in srgb,var(--line) 12%,transparent)}
-.chart{width:100%;height:auto;display:block;touch-action:pan-y}.axis{font-size:10px;fill:var(--ink2)}.limit{border-left:3px solid var(--bd);padding-left:10px;color:var(--ink2);font-size:.9rem}
+.chart{width:100%;height:auto;display:block;touch-action:pan-y}.axis{font-size:10px;fill:var(--ink2)}@media(max-width:600px){.axis{font-size:14px}}.limit{border-left:3px solid var(--bd);padding-left:10px;color:var(--ink2);font-size:.9rem}
 .banner{background:color-mix(in srgb,var(--line) 10%,var(--card));border:1px solid var(--bd);border-left:4px solid var(--line);border-radius:10px;padding:10px 14px;margin:14px 0}.banner.warn{border-left-color:var(--warm)}
 .grp{display:grid;grid-template-columns:1fr;gap:8px}@media(min-width:720px){.grp{grid-template-columns:repeat(3,1fr)}}
 footer{color:var(--ink2);font-size:.82rem;padding:10px 0 60px}#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--surface);padding:4px 8px;border-radius:6px;font-size:.8rem;display:none;z-index:9}
@@ -332,13 +398,19 @@ table{max-width:100%}.detail,.card{min-width:0;overflow-wrap:anywhere}
 
 JS = """
 (function(){var tip=document.createElement('div');tip.id='tip';document.body.appendChild(tip);
+var el=document.getElementById('mkt-data'),M=[];try{M=el?JSON.parse(el.textContent):[]}catch(e){}
+function mval(d){var lo=0,hi=M.length-1,r=null;while(lo<=hi){var m=(lo+hi)>>1;if(M[m][0]<=d){r=M[m];lo=m+1}else hi=m-1}return r}
 function word(v){return v>=1?'hot':v>=.35?'warm':v>-.35?'normal':v>-1?'cool':'cold'}
-document.querySelectorAll('svg.chart').forEach(function(svg){var data=JSON.parse(svg.getAttribute('data-h')),g=svg.querySelector('.hover'),vl=g.querySelector('.vline'),dot=g.querySelector('.dot');
-var vb=svg.viewBox.baseVal,padL=46,padR=12;
-function move(e){var r=svg.getBoundingClientRect(),x=(e.clientX-r.left)/r.width*vb.width;var f=Math.min(1,Math.max(0,(x-padL)/(vb.width-padL-padR)));var i=Math.round(f*(data.length-1));var p=data[i];
+document.querySelectorAll('svg.chart:not(.mchart)').forEach(function(svg){var data=JSON.parse(svg.getAttribute('data-h')),g=svg.querySelector('.hover'),vl=g.querySelector('.vline'),dot=g.querySelector('.dot');
+var uid=svg.getAttribute('data-uid'),ms=document.querySelector('svg.mchart[data-uid="'+uid+'"]'),mg=ms&&ms.querySelector('.mhover'),mvl=ms&&ms.querySelector('.mvline');
+var vb=svg.viewBox.baseVal,padL=__PADL__,padR=__PADR__;
+function move(e){var r=e.currentTarget.getBoundingClientRect(),x=(e.clientX-r.left)/r.width*vb.width;var f=Math.min(1,Math.max(0,(x-padL)/(vb.width-padL-padR)));var i=Math.round(f*(data.length-1));var p=data[i];
 var px=padL+i/(data.length-1)*(vb.width-padL-padR);var py=10+(2.2-p[1])/4.4*(vb.height-32);vl.setAttribute('x1',px);vl.setAttribute('x2',px);dot.setAttribute('cx',px);dot.setAttribute('cy',py);g.style.display='';
-tip.style.display='block';tip.style.left=Math.min(window.innerWidth-150,e.clientX+12)+'px';tip.style.top=(e.clientY-36)+'px';tip.textContent=p[0].slice(0,7)+': '+word(p[1])+' ('+(p[1]>0?'+':'')+p[1].toFixed(1)+')';}
-svg.addEventListener('pointermove',move);svg.addEventListener('pointerleave',function(){g.style.display='none';tip.style.display='none'});});})();
+if(mvl){mvl.setAttribute('x1',px);mvl.setAttribute('x2',px);mg.style.display=''}
+var mv=mval(p[0]),extra=mv?' · S&P 500 '+Math.round(mv[1]).toLocaleString()+(mv[0]<p[0]?' ('+mv[0].slice(0,10)+')':''):'';
+tip.style.display='block';tip.style.left=Math.min(window.innerWidth-190,e.clientX+12)+'px';tip.style.top=(e.clientY-36)+'px';tip.textContent=p[0].slice(0,7)+': '+word(p[1])+' ('+(p[1]>0?'+':'')+p[1].toFixed(1)+')'+extra;}
+function leave(){g.style.display='none';if(mg)mg.style.display='none';tip.style.display='none'}
+[svg,ms].forEach(function(t){if(t){t.addEventListener('pointermove',move);t.addEventListener('pointerleave',leave)}});});})();
 """
 
 

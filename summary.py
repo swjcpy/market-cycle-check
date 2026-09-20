@@ -185,6 +185,24 @@ def _rate_notice(today: pd.Timestamp | None = None) -> dict | None:
                      f"{date_text}The gauges compare with 3 to 12 months ago, so they react to a change like this gradually.")
 
 
+def _market() -> dict | None:
+    """Month-end S&P 500 total-return index (what the SPY fund tracks) for the price panel under each chart. Shown as context
+    only: it is never used to score anything. None if the price data is unavailable (the page then omits the panels)."""
+    try:
+        daily = fetch_yahoo_daily("^SP500TR")
+    except Exception:  # noqa: BLE001
+        return None
+    daily = daily[daily.index >= HISTORY_FROM]
+    monthly = daily.resample("ME").last() if len(daily) else daily
+    if len(monthly) < 24:                                # under two years of data: not worth a panel
+        return None
+    monthly = monthly.iloc[:-1] if monthly.index[-1] > daily.index[-1] else monthly    # the open month is replaced by the latest day
+    pts = [[d.strftime("%Y-%m-%d"), round(float(v), 1)] for d, v in monthly.items()]
+    if pts and pts[-1][0] < daily.index[-1].strftime("%Y-%m-%d"):
+        pts.append([daily.index[-1].strftime("%Y-%m-%d"), round(float(daily.iloc[-1]), 1)])
+    return dict(name="S&P 500, dividends included", points=pts)
+
+
 def _agreement(cycles: list[dict]) -> dict:
     """How many of the independent gauges lean the same way. Profits (saturated hot) and distressed (repeats credit) do not vote."""
     live = [c for c in cycles if c["score"] is not None and c["key"] in VOTING]
@@ -375,7 +393,7 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
         c["newest_data"], c["oldest_data"] = (lasts[-1], lasts[0]) if lasts else (None, None)
         c["input_missing"] = any(not r["last"] for r in rows)
     return dict(schema=SCHEMA, generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), headline=headline, cycles=cycles,
-                notices=notices, agree=_agreement(cycles), events=_events(cycles) if record_events else [],
+                market=_market(), notices=notices, agree=_agreement(cycles), events=_events(cycles) if record_events else [],
                 health=health, disclaimer=plain.DISCLAIMER)
 
 

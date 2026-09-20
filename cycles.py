@@ -105,7 +105,7 @@ CYCLES = {
         # after-tax corporate profits as a share of the whole economy (GDP): high = companies keep an unusually large slice.
         # BEA publishes a quarter's profits ~2 months after it ends and revises them; usable here from the end of month 6.
         # confidence 0.5: the share has stepped up since ~2005 (5-7% -> 10-13%), so against its full history it sits at the maximum
-        # almost every quarter (a structural shift, not a cycle) and it would otherwise carry half of this gauge.
+        # (about three quarters of quarters since 2005) - a structural shift, not a cycle - and it would otherwise carry half of this gauge.
         Indicator("profit_share_of_gdp", "fred:CP", "quarterly", sign=1, min_history=20, lag_months=6, ffill_limit=4, family="corporate_profits",
                   confidence=0.5,
                   other=Series("fred:GDP", "quarterly", lag_months=6), combine="ratio"),

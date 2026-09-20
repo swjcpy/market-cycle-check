@@ -184,10 +184,10 @@ STAGE_MILD_TEXT = {
 
 # A reading counted at less than full strength must say why (shown next to it on the page)
 CONFIDENCE_NOTE = {
-    "consumer_sentiment": "Counted at half of its normal weight: this survey measures households' worries about prices more than investors' appetite for risk, "
+    "consumer_sentiment": "Given half the weight it would otherwise get: this survey measures households' worries about prices more than investors' appetite for risk, "
                           "it changed from phone to online interviews in 2024 (so recent readings are not comparable with older ones), and it is near its lowest level on record.",
-    "profit_share_of_gdp": "Counted at half of its normal weight: company profits have taken a much bigger share of the economy since about 2005, so this reading "
-                           "sits at its maximum almost all the time and says little about where we are in the cycle.",
+    "profit_share_of_gdp": "Given half the weight it would otherwise get: company profits have taken a much bigger share of the economy since about 2005, so this "
+                           "reading sits near the top of its range most of the time and says little about where we are in the cycle.",
 }
 
 NOT_A_SIGNAL = "This is general education, not a buy or sell signal and not personal advice."

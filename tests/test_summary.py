@@ -853,9 +853,9 @@ def test_indicator_weights_and_shared_vote_text(monkeypatch):
     assert by["psychology"]["vix"]["shares_with"] == [] and by["credit"]["baa_10y_spread"]["shares_with"] == []   # no family, no shared vote
     assert sorted(i["weight"] for i in by["policy"].values()) == [16, 17, 17, 50]
     sent = by["psychology"]["consumer_sentiment"]
-    assert sent["weight"] == 20 and sent["low_confidence"] and "half of its normal weight" in sent["low_confidence"]
+    assert sent["weight"] == 20 and sent["low_confidence"] and "half the weight it would otherwise get" in sent["low_confidence"]
     assert by["profits"]["profit_share_of_gdp"]["weight"] == 33 and by["profits"]["profit_growth_yoy"]["weight"] == 67
-    assert by["profits"]["profit_share_of_gdp"]["low_confidence"] and "since about 2005" in by["profits"]["profit_share_of_gdp"]["low_confidence"]
+    assert by["profits"]["profit_share_of_gdp"]["low_confidence"] and "since about 2005" in by["profits"]["profit_share_of_gdp"]["low_confidence"] and "near the top of its range" in by["profits"]["profit_share_of_gdp"]["low_confidence"]
     assert all(i["low_confidence"] is None for k, inds in by.items() for n, i in inds.items() if n not in ("consumer_sentiment", "profit_share_of_gdp"))
     assert by["policy"]["curve_10y_minus_3m"]["weight"] == 50 and by["policy"]["curve_10y_minus_3m"]["shares_with"] == []
     r = by["policy"]["real_policy_rate"]
@@ -875,6 +875,6 @@ def test_round_to_100_and_page_text_is_honest_about_limits():
 
 def test_page_explains_a_reduced_weight_reading():
     page = server.render(real_summary(), "now", None)
-    assert "Counted at half of its normal weight" in page and "counts for 20% of this gauge" in page and "counts for 33% of this gauge" in page
-    assert "of this gauge. Counted at half of its normal weight" in server.weight_text(dict(weight=20, shares_with=[], low_confidence="Counted at half of its normal weight: x"))
+    assert "Given half the weight it would otherwise get" in page and "counts for 20% of this gauge" in page and "counts for 33% of this gauge" in page
+    assert "of this gauge. Given half the weight" in server.weight_text(dict(weight=20, shares_with=[], low_confidence="Given half the weight: x"))
     assert "&lt;i&gt;" in server.weight_text(dict(weight=20, shares_with=[], low_confidence="<i>x</i>")) and "<i>" not in server.weight_text(dict(weight=20, shares_with=[], low_confidence="<i>x</i>"))

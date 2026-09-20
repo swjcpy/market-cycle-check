@@ -186,21 +186,30 @@ def _rate_notice(today: pd.Timestamp | None = None) -> dict | None:
 
 
 def _market() -> dict | None:
-    """Month-end S&P 500 total-return index (what the SPY fund tracks) for the price panel under each chart. Shown as context
-    only: it is never used to score anything. None if the price data is unavailable (the page then omits the panels)."""
+    """The S&P 500 total-return index (what the SPY fund tracks) as three views for the layer on each chart, month-end since
+    1995 plus the latest day: the price, the change over the past year, and the drop from its previous high. The last two remove
+    the long climb so booms and busts are visible. Context only: never used to score anything. None if the data is unavailable."""
     try:
         daily = fetch_yahoo_daily("^SP500TR")
     except Exception:  # noqa: BLE001
         return None
-    daily = daily[daily.index >= HISTORY_FROM]
-    monthly = daily.resample("ME").last() if len(daily) else daily
-    if len(monthly) < 24:                                # under two years of data: not worth a panel
+    if len(daily) < 400:
         return None
-    monthly = monthly.iloc[:-1] if monthly.index[-1] > daily.index[-1] else monthly    # the open month is replaced by the latest day
-    pts = [[d.strftime("%Y-%m-%d"), round(float(v), 1)] for d, v in monthly.items()]
-    if pts and pts[-1][0] < daily.index[-1].strftime("%Y-%m-%d"):
-        pts.append([daily.index[-1].strftime("%Y-%m-%d"), round(float(daily.iloc[-1]), 1)])
-    return dict(name="S&P 500, dividends included", points=pts)
+    year_ago = pd.Series(daily.asof(daily.index - pd.Timedelta(days=365)).to_numpy(), index=daily.index)   # last close on/before a year earlier
+    frames = {"points": daily, "yoy": (daily / year_ago - 1) * 100, "dd": (daily / daily.cummax() - 1) * 100}   # drop vs the all-time high so far
+    out = {"name": "S&P 500, dividends included"}
+    for key, ser in frames.items():
+        ser = ser.dropna()
+        ser = ser[ser.index >= HISTORY_FROM]
+        monthly = ser.resample("ME").last() if len(ser) else ser
+        if len(monthly) < 24:                              # under two years of data: not worth a layer
+            return None
+        monthly = monthly.iloc[:-1] if monthly.index[-1] > ser.index[-1] else monthly    # the open month is replaced by the latest day
+        pts = [[d.strftime("%Y-%m-%d"), round(float(v), 1)] for d, v in monthly.items()]
+        if pts and pts[-1][0] < ser.index[-1].strftime("%Y-%m-%d"):
+            pts.append([ser.index[-1].strftime("%Y-%m-%d"), round(float(ser.iloc[-1]), 1)])
+        out[key] = pts
+    return out
 
 
 def _agreement(cycles: list[dict]) -> dict:

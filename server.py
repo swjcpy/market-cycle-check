@@ -48,21 +48,88 @@ esc = html.escape
 
 
 # ---------------------------------------------------------------------------------------------------- charts
-PAD_L, PAD_R = 60, 12          # shared by both panels and the hover script so a date has the same x everywhere
+PAD_L, PAD_R = 60, 64          # left labels (Cold..Hot) and right labels (S&P 500); shared with the hover script
+PAD_T, PAD_B = 10, 22
 MAX_MARKET_POINTS = 1500       # a sane cap: the series is repeated in every chart
+MARKET_VIEWS = ("yoy", "dd", "px")     # past-year change (default), drop from the previous high, price on a log scale
+PX_TICKS = (500, 1000, 2000, 5000, 10000, 20000, 50000)
+SOURCE_KEY = {"px": "points"}          # the price series is stored as "points" in summary.json
+VIEW_LABEL = {"yoy": "Past-year change", "dd": "Drop from its high", "px": "Price (log scale)"}
+VIEW_LEGEND = {"yoy": "S&amp;P 500: how much it changed over the past year (right scale)",
+               "dd": "S&amp;P 500: how far it is below its previous high (right scale)",
+               "px": "S&amp;P 500 with dividends, price (right scale, logarithmic)"}
+MINUS = "\u2212"
 
 
-def svg_history(hist: list, recessions: list, uid: str, w: int = 640, h: int = 170) -> str:
-    """Score history as inline SVG. Hover data is embedded as data-h for the tiny tooltip script."""
+def _pct(v: float) -> str:
+    return "0%" if abs(v) < 0.5 else f"{'+' if v > 0 else MINUS}{abs(v):.0f}%"
+
+
+def _clean_series(market, key: str) -> list:
+    """One view of the price data, validated: finite numbers, valid dates, sorted, one value per date (the last), plausible size
+    (percent views within +-1000; prices positive). Malformed points are skipped, never fatal."""
+    src = market.get(SOURCE_KEY.get(key, key)) if isinstance(market, dict) else None
+    if not isinstance(src, list):
+        return []
+    by_date = {}
+    for p in src:
+        try:
+            d, v = str(p[0])[:10], float(p[1])
+            datetime.fromisoformat(d)
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isfinite(v) and ((v > 0) if key == "px" else abs(v) <= 1000):
+            by_date[d] = v
+    return sorted(by_date.items())
+
+
+def _market_points(market, key: str, d0: str, d1: str) -> list:
+    """The validated series inside the gauge's date range (plus the rest of its last month, drawn at the right edge), thinned to a
+    sane size while always keeping the first and last point."""
+    end = (datetime.fromisoformat(d1) + timedelta(days=31)).replace(day=1) - timedelta(days=1)    # last day of d1's month
+    pts = [(d, v) for d, v in _clean_series(market, key) if d0 <= d <= end.strftime("%Y-%m-%d")]
+    if len(pts) > MAX_MARKET_POINTS:
+        step = -(-len(pts) // MAX_MARKET_POINTS)
+        pts = pts[::step] + ([pts[-1]] if (len(pts) - 1) % step else [])
+    return pts
+
+
+def _view_scale(key: str, vals: list) -> tuple:
+    """(lo, hi, transform, ticks) for one view: linear for the two percent views, logarithmic for the price."""
+    lo_v, hi_v = min(vals), max(vals)
+    if key == "px":
+        lo, hi = math.log(lo_v * 0.92), math.log(hi_v * 1.08)
+        return lo, hi, math.log, [(t, f"{t:,}") for t in PX_TICKS if lo_v * 0.92 < t < hi_v * 1.08]
+    if key == "dd":
+        lo, hi = lo_v - 4, max(hi_v, 0) + 3
+    else:
+        lo, hi = lo_v - 6, hi_v + 6
+    step = 20 if hi - lo > 45 else 10
+    first = math.ceil(lo / step) * step
+    ticks = [first + step * i for i in range(int((hi - first) // step) + 1)]          # only in-range ticks: never a huge loop
+    return lo, hi, (lambda v: v), [(t, _pct(t)) for t in ticks if lo < t < hi]
+
+
+def svg_history(hist: list, recessions: list, uid: str, market: dict | None = None, w: int = 640, h: int = 220) -> str:
+    """Gauge history as inline SVG, with (optionally) the S&P 500 layered on as a thin grey line read on the RIGHT-hand scale.
+    Three views of the stock market can be switched between (see MARKET_VIEWS). The two lines always use different scales, so
+    where they cross means nothing; the legend and caption say so."""
     if len(hist) < 2:
         return ""
-    pad_l, pad_r, pad_t, pad_b = PAD_L, PAD_R, 10, 22
+    pad_l, pad_r, pad_t, pad_b = PAD_L, PAD_R, PAD_T, PAD_B
     t0, t1 = datetime.fromisoformat(hist[0][0]).timestamp(), datetime.fromisoformat(hist[-1][0]).timestamp()
     if t1 <= t0:
         return ""
-    X = lambda d: pad_l + (datetime.fromisoformat(d).timestamp() - t0) / (t1 - t0) * (w - pad_l - pad_r)  # noqa: E731
+    X = lambda d: pad_l + min((datetime.fromisoformat(d).timestamp() - t0) / (t1 - t0), 1.0) * (w - pad_l - pad_r)  # noqa: E731
     Y = lambda v: pad_t + (2.2 - v) / 4.4 * (h - pad_t - pad_b)  # noqa: E731
-    parts = [f'<svg class="chart" viewBox="0 0 {w} {h}" role="img" aria-label="History of this gauge since {hist[0][0][:4]}" data-h=\'{json.dumps(hist)}\' data-uid="{uid}">']
+    views = {}
+    for key in MARKET_VIEWS:
+        pts = _market_points(market, key, hist[0][0], hist[-1][0])
+        if len(pts) >= 2:
+            views[key] = (pts, *_view_scale(key, [v for _, v in pts]))
+    extra = "".join(f' data-m-{k}="{lo:.5f},{hi:.5f}"' for k, (_, lo, hi, _, _) in views.items())
+    label = f"History of this gauge since {hist[0][0][:4]}" + (" with the S&P 500 stock index layered on a right-hand scale" if views else "")
+    parts = [f'<svg class="chart" viewBox="0 0 {w} {h}" role="img" aria-label="{label}" data-h=\'{json.dumps(hist)}\' data-uid="{esc(uid)}"{extra}>']
     parts.append(f'<rect x="{pad_l}" y="{Y(2.2):.1f}" width="{w - pad_l - pad_r}" height="{Y(1) - Y(2.2):.1f}" fill="var(--hot)" opacity=".10"/>')
     parts.append(f'<rect x="{pad_l}" y="{Y(-1):.1f}" width="{w - pad_l - pad_r}" height="{Y(-2.2) - Y(-1):.1f}" fill="var(--cold)" opacity=".10"/>')
     for a, b in recessions:
@@ -76,67 +143,42 @@ def svg_history(hist: list, recessions: list, uid: str, w: int = 640, h: int = 1
     for yr in range((y0 // 5 + 1) * 5, y1 + 1, 5):
         x = X(f"{yr}-01-01")
         parts.append(f'<text x="{x:.1f}" y="{h - 5}" text-anchor="middle" class="axis">{yr}</text>')
+    for key, (pts, lo, hi, tf, ticks) in views.items():
+        YM = lambda v, lo=lo, hi=hi, tf=tf: pad_t + (hi - tf(v)) / (hi - lo) * (h - pad_t - pad_b)  # noqa: E731
+        parts.append(f'<g class="mlayer mv mv-{key}">')
+        for t, txt in ticks:
+            parts.append(f'<line x1="{w - pad_r}" x2="{w - pad_r + 4}" y1="{YM(t):.1f}" y2="{YM(t):.1f}" stroke="var(--ink2)"/>'
+                         f'<text x="{w - pad_r + 7}" y="{YM(t) + 4:.1f}" class="axis">{txt}</text>')
+        line = " ".join(f"{X(d):.1f},{YM(v):.1f}" for d, v in pts)
+        parts.append(f'<polyline class="mline" points="{line}" fill="none" stroke="var(--ink2)" stroke-width="1.4" stroke-dasharray="6 3" stroke-linejoin="round" opacity=".9"/></g>')
     pts = " ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in hist)
-    parts.append(f'<polyline points="{pts}" fill="none" stroke="var(--line)" stroke-width="2" stroke-linejoin="round"/>')
+    parts.append(f'<polyline points="{pts}" fill="none" stroke="var(--line)" stroke-width="2.4" stroke-linejoin="round"/>')
     lx, ly = X(hist[-1][0]), Y(hist[-1][1])
     parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="5" fill="var(--line)" stroke="var(--surface)" stroke-width="2"/>')
+    mdot = '<circle class="mdot mlayer" style="display:none" r="3.5" fill="var(--ink2)" stroke="var(--surface)" stroke-width="1.5"/>' if views else ""
     parts.append(f'<g class="hover" style="display:none"><line class="vline" y1="{pad_t}" y2="{h - pad_b}" stroke="var(--ink2)" stroke-width="1"/>'
-                 f'<circle class="dot" r="4" fill="var(--line)" stroke="var(--surface)" stroke-width="2"/></g></svg>')
-    return "".join(parts)
-
-
-def svg_market(market: dict | None, hist: list, recessions: list, uid: str, w: int = 640, h: int = 110) -> str:
-    """The S&P 500 panel under a gauge chart: same time axis and recession bands, its OWN log scale (never a dual axis)."""
-    if not isinstance(market, dict) or len(hist) < 2 or not isinstance(market.get("points"), list) or len(market["points"]) < 2:
-        return ""
-    pad_l, pad_r, pad_t, pad_b = PAD_L, PAD_R, 8, 6
-    d0, d1 = hist[0][0], hist[-1][0]
-    t0, t1 = datetime.fromisoformat(d0).timestamp(), datetime.fromisoformat(d1).timestamp()
-    pts = []
-    for p in market["points"]:
-        try:
-            d, v = str(p[0]), float(p[1])
-            datetime.fromisoformat(d)
-        except (TypeError, ValueError, IndexError):
-            continue                                       # skip a malformed point instead of failing the whole page
-        if d0 <= d <= d1 and v > 0 and math.isfinite(v):
-            pts.append((d, v))
-    if len(pts) > MAX_MARKET_POINTS:
-        pts = pts[:: -(-len(pts) // MAX_MARKET_POINTS)]
-    if t1 <= t0 or len(pts) < 2:
-        return ""
-    X = lambda d: pad_l + (datetime.fromisoformat(d).timestamp() - t0) / (t1 - t0) * (w - pad_l - pad_r)  # noqa: E731
-    lo, hi = math.log(min(v for _, v in pts) * 0.92), math.log(max(v for _, v in pts) * 1.08)
-    Y = lambda v: pad_t + (hi - math.log(v)) / (hi - lo) * (h - pad_t - pad_b)  # noqa: E731
-    parts = [f'<svg class="chart mchart" viewBox="0 0 {w} {h}" role="img" data-uid="{esc(uid)}" '
-             f'aria-label="{esc(str(market.get("name", "Stock market")))} over the same period, on a logarithmic scale">']
-    for a, b in recessions:
-        xa, xb = max(X(a), pad_l), min(X(b), w - pad_r)
-        if xb > xa:
-            parts.append(f'<rect x="{xa:.1f}" y="{pad_t}" width="{xb - xa:.1f}" height="{h - pad_t - pad_b}" fill="var(--ink)" opacity=".10"/>')
-    lows, highs = min(v for _, v in pts), max(v for _, v in pts)
-    for tick in (500, 1000, 2000, 5000, 10000, 20000, 50000):
-        if lows * 0.92 < tick < highs * 1.08:
-            parts.append(f'<line x1="{pad_l}" x2="{w - pad_r}" y1="{Y(tick):.1f}" y2="{Y(tick):.1f}" stroke="var(--grid)"/>')
-            parts.append(f'<text x="{pad_l - 6}" y="{Y(tick) + 4:.1f}" text-anchor="end" class="axis">{tick:,}</text>')
-    line = " ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in pts)
-    parts.append(f'<polyline points="{line}" fill="none" stroke="var(--ink2)" stroke-width="1.6" stroke-linejoin="round"/>')
-    parts.append(f'<g class="mhover" style="display:none"><line class="mvline" y1="{pad_t}" y2="{h - pad_b}" stroke="var(--ink2)" stroke-width="1"/></g></svg>')
+                 f'{mdot}<circle class="dot" r="4" fill="var(--line)" stroke="var(--surface)" stroke-width="2"/></g></svg>')
     return "".join(parts)
 
 
 def chart_pair(hist: list, recessions: list, uid: str, market: dict | None) -> str:
-    """The gauge chart with, when price data exists, the S&P 500 panel directly underneath (aligned)."""
-    top = svg_history(hist, recessions, uid)
+    """The gauge chart with, when price data exists, the S&P 500 layered on it, a view switch, a legend and an honest caption."""
     try:
-        bottom = svg_market(market, hist, recessions, uid)
-    except Exception:  # noqa: BLE001  the price panel is optional context: never let it take the chart (or page) down
-        log.exception("price panel failed for %s", uid)
-        bottom = ""
-    if not bottom:
-        return top
-    return (top + bottom + '<p class="sub mcap">Lower chart: the S&amp;P 500 stock index with dividends (what the SPY fund follows), on its own scale. '
-            'Moving together does not mean a gauge predicts the market: in our tests none did reliably.</p>')
+        chart = svg_history(hist, recessions, uid, market)
+    except Exception:  # noqa: BLE001  the price layer is optional context: never let it take the chart (or page) down
+        log.exception("price layer failed for %s", uid)
+        chart = svg_history(hist, recessions, uid)
+    present = [k for k in MARKET_VIEWS if f'mv-{k}"' in chart]
+    if not present:
+        return chart
+    legend = "".join(f'<span class="mkey mv mv-{k}"><i class="sw mkt"></i>{VIEW_LEGEND[k]}</span>' for k in present)
+    radios = '<span class="mkey" role="radiogroup" aria-label="Which view of the stock market to layer on the chart">' + "".join(f'<label><input type="radio" class="mview-box" name="mview-{esc(uid)}" value="{k}"{" checked" if k == present[0] else ""}> {VIEW_LABEL[k]}</label>'
+                     for k in present) + "</span>"
+    return (chart + '<div class="legend"><span><i class="sw"></i>This gauge (left scale: Cold to Hot)</span>' + legend + '</div>'
+            '<div class="legend mctl"><span class="mkey">Stock market layer:</span>' + radios +
+            '<label class="mtoggle"><input type="checkbox" class="mtoggle-box" checked> Show</label></div>'
+            '<p class="sub mkey">The grey line is the stock market (what the SPY fund follows). The two lines use different scales, so where they '
+            'cross means nothing, and moving together does not mean a gauge predicts the market: in our tests none did reliably.</p>')
 
 
 def thermometer(score: float | None, big: bool = False) -> str:
@@ -178,11 +220,24 @@ def month_name(iso: str | None) -> str:
         return "?"
 
 
+def default_view(market: dict | None) -> str:
+    """The view shown before any script runs: the first available of MARKET_VIEWS."""
+    return next((k for k in MARKET_VIEWS if len(_clean_series(market, k)) >= 2), "yoy")
+
+
+def js_source() -> str:
+    return JS.replace("__PADL__", str(PAD_L)).replace("__PADR__", str(PAD_R)).replace("__PADT__", str(PAD_T)).replace("__PADB__", str(PAD_B))
+
+
 def market_data(market: dict | None) -> str:
-    """The price series once, for the hover tooltips of every chart (JSON in a script tag: nothing to escape but '<')."""
-    if not isinstance(market, dict) or not isinstance(market.get("points"), list) or not market["points"]:
+    """The price views once, for the hover tooltips of every chart (JSON in a script tag: only '<' needs escaping)."""
+    if not isinstance(market, dict):
         return ""
-    return '<script type="application/json" id="mkt-data">' + json.dumps(market["points"]).replace("<", "\\u003c") + "</script>"
+    data = {k: [[d, round(v, 2)] for d, v in _clean_series(market, k)] for k in MARKET_VIEWS}
+    data = {k: v for k, v in data.items() if v}
+    if not data:
+        return ""
+    return '<script type="application/json" id="mkt-data">' + json.dumps(data, allow_nan=False).replace("<", "\\u003c") + "</script>"
 
 
 def notice_html(c: dict) -> str:
@@ -326,7 +381,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Market Cycle Check</title>
-<style>{CSS}</style></head><body>
+<style>{CSS}</style></head><body class="nojs" data-mview="{default_view(s.get("market"))}">
 <header><h1>Market Cycle Check</h1><p class="sub">Where are we in the market's mood swings? Updated {esc(local_time(refreshed or s["generated"]))} · data as of {esc(h["as_of"])}</p></header>
 <main>
 {banner}
@@ -359,7 +414,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
 <p class="sub">Monthly and quarterly numbers are published weeks or months late; that is normal.</p></details></section>
 <footer><p>{esc(s["disclaimer"])}</p></footer>
 </main>
-{market_data(s.get("market"))}<script>{JS.replace("__PADL__", str(PAD_L)).replace("__PADR__", str(PAD_R))}</script></body></html>'''
+{market_data(s.get("market"))}<script>{js_source()}</script></body></html>'''
 
 
 CSS = """
@@ -375,7 +430,8 @@ h1{margin:0;font-size:1.5rem}h2{font-size:1.5rem;line-height:1.25;margin:.3rem 0
 .cols{display:grid;grid-template-columns:1fr;gap:0 24px}@media(min-width:720px){.cols{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr 1fr}}
 ul{margin:.3rem 0 .6rem;padding-left:1.2rem}li{margin:.25rem 0}
 .pill{display:inline-block;padding:3px 11px;border-radius:999px;border:1.5px solid var(--c,var(--bd));background:color-mix(in srgb,var(--c,var(--bd)) 16%,transparent);font-size:.85rem;font-weight:600;white-space:nowrap}
-.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.drivers{margin:.4rem 0}
+.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.nojs .mctl{display:none}
+.mv{display:none}body[data-mview="yoy"] .mv-yoy,body[data-mview="dd"] .mv-dd,body[data-mview="px"] .mv-px{display:inline}body.nomkt .mlayer,body.nomkt .mkey,body.nomkt .mv{display:none!important}.mctl input{margin-right:4px}.drivers{margin:.4rem 0}
 .thermo{position:relative;height:12px;border-radius:8px;margin:12px 0 4px;background:linear-gradient(90deg,var(--cold),var(--cool) 30%,var(--normal) 50%,var(--warm) 70%,var(--hot))}
 .thermo.big{height:18px;border-radius:10px}.marker{position:absolute;top:-5px;width:6px;height:calc(100% + 10px);background:var(--ink);border:2px solid var(--surface);border-radius:4px;transform:translateX(-50%)}
 .thermo-lab{display:flex;justify-content:space-between;font-size:.72rem;color:var(--ink2)}
@@ -386,7 +442,7 @@ details>summary{list-style:none;cursor:pointer}details>summary::-webkit-details-
 details[open] .more{display:none}.detail{margin-top:10px;border-top:1px solid var(--bd);padding-top:6px}
 table.ind{width:100%;border-collapse:collapse;font-size:.9rem}.ind th{font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;text-align:left;color:var(--ink2);border-bottom:1px solid var(--bd);padding:6px 4px}
 .ind td{padding:8px 4px;border-bottom:1px solid var(--bd);vertical-align:top}.num{text-align:right}.ind .now td{font-weight:700;background:color-mix(in srgb,var(--line) 12%,transparent)}
-.chart{width:100%;height:auto;display:block;touch-action:pan-y}.axis{font-size:10px;fill:var(--ink2)}@media(max-width:600px){.axis{font-size:14px}}.limit{border-left:3px solid var(--bd);padding-left:10px;color:var(--ink2);font-size:.9rem}
+.chart{width:100%;height:auto;display:block;touch-action:pan-y}.axis{font-size:10px;fill:var(--ink2)}@media(max-width:600px){.axis{font-size:15px}}.limit{border-left:3px solid var(--bd);padding-left:10px;color:var(--ink2);font-size:.9rem}
 .banner{background:color-mix(in srgb,var(--line) 10%,var(--card));border:1px solid var(--bd);border-left:4px solid var(--line);border-radius:10px;padding:10px 14px;margin:14px 0}.banner.warn{border-left-color:var(--warm)}
 .grp{display:grid;grid-template-columns:1fr;gap:8px}@media(min-width:720px){.grp{grid-template-columns:repeat(3,1fr)}}
 footer{color:var(--ink2);font-size:.82rem;padding:10px 0 60px}#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--surface);padding:4px 8px;border-radius:6px;font-size:.8rem;display:none;z-index:9}
@@ -399,19 +455,27 @@ table{max-width:100%}.detail,.card{min-width:0;overflow-wrap:anywhere}
 
 JS = """
 (function(){var tip=document.createElement('div');tip.id='tip';document.body.appendChild(tip);
-var el=document.getElementById('mkt-data'),M=[];try{M=el?JSON.parse(el.textContent):[]}catch(e){}
-function mval(d){var lo=0,hi=M.length-1,r=null;while(lo<=hi){var m=(lo+hi)>>1;if(M[m][0]<=d){r=M[m];lo=m+1}else hi=m-1}return r}
+var el=document.getElementById('mkt-data'),M={};try{M=el?JSON.parse(el.textContent):{}}catch(e){}
+function mval(view,d){var A=M[view]||[],lo=0,hi=A.length-1,r=null;while(lo<=hi){var m=(lo+hi)>>1;if(A[m][0]<=d){r=A[m];lo=m+1}else hi=m-1}return r}
 function word(v){return v>=1?'hot':v>=.35?'warm':v>-.35?'normal':v>-1?'cool':'cold'}
-document.querySelectorAll('svg.chart:not(.mchart)').forEach(function(svg){var data=JSON.parse(svg.getAttribute('data-h')),g=svg.querySelector('.hover'),vl=g.querySelector('.vline'),dot=g.querySelector('.dot');
-var uid=svg.getAttribute('data-uid'),ms=document.querySelector('svg.mchart[data-uid="'+uid+'"]'),mg=ms&&ms.querySelector('.mhover'),mvl=ms&&ms.querySelector('.mvline');
-var vb=svg.viewBox.baseVal,padL=__PADL__,padR=__PADR__;
-function move(e){var r=e.currentTarget.getBoundingClientRect(),x=(e.clientX-r.left)/r.width*vb.width;var f=Math.min(1,Math.max(0,(x-padL)/(vb.width-padL-padR)));var i=Math.round(f*(data.length-1));var p=data[i];
-var px=padL+i/(data.length-1)*(vb.width-padL-padR);var py=10+(2.2-p[1])/4.4*(vb.height-32);vl.setAttribute('x1',px);vl.setAttribute('x2',px);dot.setAttribute('cx',px);dot.setAttribute('cy',py);g.style.display='';
-if(mvl){mvl.setAttribute('x1',px);mvl.setAttribute('x2',px);mg.style.display=''}
-var mv=mval(p[0]),extra=mv?' · S&P 500 '+Math.round(mv[1]).toLocaleString()+(mv[0]<p[0]?' ('+mv[0].slice(0,10)+')':''):'';
-tip.style.display='block';tip.style.left=Math.min(window.innerWidth-190,e.clientX+12)+'px';tip.style.top=(e.clientY-36)+'px';tip.textContent=p[0].slice(0,7)+': '+word(p[1])+' ('+(p[1]>0?'+':'')+p[1].toFixed(1)+')'+extra;}
-function leave(){g.style.display='none';if(mg)mg.style.display='none';tip.style.display='none'}
-[svg,ms].forEach(function(t){if(t){t.addEventListener('pointermove',move);t.addEventListener('pointerleave',leave)}});});})();
+function txt(view,v){if(view==='px')return Math.round(v).toLocaleString();var a=Math.abs(v).toFixed(0);return view==='dd'?(v>-0.5?'at its high':a+'% below its high'):((Math.round(v)===0?'':(v>0?'+':'\\u2212'))+a+'% past year')}
+var body=document.body;body.classList.remove('nojs');var boxes=document.querySelectorAll('.mtoggle-box'),radios=document.querySelectorAll('.mview-box');
+function store(k,v){try{localStorage.setItem(k,v)}catch(e){}}
+function load(k){try{return localStorage.getItem(k)}catch(e){return null}}
+function applyOn(on){body.classList.toggle('nomkt',!on);boxes.forEach(function(b){b.checked=on})}
+function applyView(v){body.setAttribute('data-mview',v);radios.forEach(function(r){r.checked=(r.value===v)})}
+applyOn(load('mc-mkt')!=='0');var sv=load('mc-mview');if(sv==='yoy'||sv==='dd'||sv==='px')applyView(sv);
+boxes.forEach(function(b){b.addEventListener('change',function(){applyOn(b.checked);store('mc-mkt',b.checked?'1':'0')})});
+radios.forEach(function(r){r.addEventListener('change',function(){if(r.checked){applyView(r.value);store('mc-mview',r.value)}})});
+document.querySelectorAll('svg.chart').forEach(function(svg){var data=JSON.parse(svg.getAttribute('data-h')),g=svg.querySelector('.hover'),vl=g.querySelector('.vline'),dot=g.querySelector('.dot'),md=g.querySelector('.mdot');
+var vb=svg.viewBox.baseVal,padL=__PADL__,padR=__PADR__,padT=__PADT__,padB=__PADB__;
+function scale(view){var a=svg.getAttribute('data-m-'+view);if(!a)return null;var p=a.split(',');return [parseFloat(p[0]),parseFloat(p[1])]}
+function move(e){var r=svg.getBoundingClientRect(),x=(e.clientX-r.left)/r.width*vb.width;var f=Math.min(1,Math.max(0,(x-padL)/(vb.width-padL-padR)));var i=Math.round(f*(data.length-1));var p=data[i];
+var px=padL+i/(data.length-1)*(vb.width-padL-padR),plotH=vb.height-padT-padB;var py=padT+(2.2-p[1])/4.4*plotH;vl.setAttribute('x1',px);vl.setAttribute('x2',px);dot.setAttribute('cx',px);dot.setAttribute('cy',py);g.style.display='';
+var view=body.getAttribute('data-mview'),on=!body.classList.contains('nomkt'),mv=mval(view,p[0]),sc=scale(view),extra='';
+if(mv&&on&&sc){extra=' · S&P 500 '+txt(view,mv[1])+(mv[0]<p[0]?' ('+mv[0].slice(0,10)+')':'');if(md){md.style.display='';var t=view==='px'?Math.log(mv[1]):mv[1];md.setAttribute('cx',px);md.setAttribute('cy',padT+(sc[1]-t)/(sc[1]-sc[0])*plotH)}}
+tip.style.display='block';tip.style.left=Math.min(window.innerWidth-230,e.clientX+12)+'px';tip.style.top=(e.clientY-36)+'px';tip.textContent=p[0].slice(0,7)+': '+word(p[1])+' ('+(p[1]>0?'+':'')+p[1].toFixed(1)+')'+extra;}
+svg.addEventListener('pointermove',move);svg.addEventListener('pointerleave',function(){g.style.display='none';tip.style.display='none'});});})();
 """
 
 

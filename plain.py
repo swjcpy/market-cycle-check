@@ -12,13 +12,13 @@ CYCLE_INFO = {
     "psychology": dict(
         title="Investor mood", icon="🎭", up="more optimistic", down="more fearful",
         asks="Are investors relaxed and greedy, or scared?",
-        measures="How calm the stock market's 'fear gauge' is, how far stock prices sit above their long-run trend, and how confident households feel.",
+        measures="How calm the stock market's 'fear gauge' is, how far stock prices sit above their long-run trend, how expensive stocks are compared with a decade of company earnings, and how confident households feel.",
         hot="Investors are relaxed and optimistic. Prices have run up and few people are worried.",
         cold="Investors are frightened. Prices are depressed and pessimism is everywhere.",
         why="Prices are set by people, and people swing between too optimistic and too pessimistic. The mood matters more than the news.",
         hot_you="Marks argues risk is highest when everyone feels safe, though in our 30-year history some warm and hot stretches lasted for years. Consider whether you could sit through a 30% fall, and avoid chasing what is soaring.",
         cold_you="Marks argues bargains appear when everyone is scared, but prices can keep falling first. Patience and money you will not need soon matter most.",
-        limit="Confidence surveys have been depressed by inflation worries since 2022, which pulls this gauge down even when markets are cheerful.",
+        limit="Confidence surveys have been depressed by inflation worries since 2022, which pulls this gauge down even when markets are cheerful. Expensive stocks (a high CAPE) have historically told you more about returns over the next ten years than the next one.",
     ),
     "credit": dict(
         title="Lending & credit", icon="💳", up="loosening", down="tightening",
@@ -45,7 +45,7 @@ CYCLE_INFO = {
     "policy": dict(
         title="Central bank policy", icon="🏦", up="easing", down="tightening",
         asks="Is the central bank making money cheap or expensive?",
-        measures="The central bank's interest rate after inflation, whether it is raising or cutting rates, and the gap between long-term and short-term rates.",
+        measures="The central bank's interest rate after inflation, whether it has raised or cut rates over the past three months and the past year, and the gap between long-term and short-term rates.",
         hot="Money is cheap: interest rates are low and the central bank is helping the economy along.",
         cold="Money is expensive: rates are high or rising and the central bank is pushing on the brakes.",
         why="Governments and central banks try to smooth the cycle, which often changes its timing rather than removing it.",
@@ -102,11 +102,13 @@ CYCLE_INFO = {
 # label, how to show the raw value, one-line plain meaning
 INDICATOR_INFO = {
     "vix": ("Stock-market fear gauge (VIX)", "{:.1f}", "How much price swinging traders expect. Low = calm and complacent, high = scared."),
+    "cape": ("Stock prices vs 10 years of earnings (CAPE)", "{:.1f}", "Stock prices divided by the average of the last ten years of company earnings, after inflation. Higher = more expensive. It has only been above 40 once before, in 1999-2000."),
     "sp500_vs_10y_trend": ("Stock prices vs 10-year trend", "{:+.0%}", "How far the S&P 500 sits above (+) or below (−) its average of the last 10 years."),
     "consumer_sentiment": ("Household confidence", "{:.0f}", "University of Michigan survey of how confident ordinary households feel."),
     "baa_10y_spread": ("Extra interest firms pay", "{:.2f} points", "Extra yearly interest that fairly safe companies pay over the U.S. government. Small = lenders relaxed."),
     "sloos_ci_tightening": ("Banks tightening loans", "{:+.0f}%", "Net share of banks making business loans harder to get. Negative = banks are easing."),
     "real_policy_rate": ("Interest rate after inflation", "{:+.1f} points", "The central bank's rate minus recent inflation: how tight money really is."),
+    "policy_rate_3m_change": ("Rate change over 3 months", "{:+.2f} points", "How much the central bank's rate rose (+) or fell (−) in the past three months. Shows a fresh hike or cut quickly."),
     "policy_rate_12m_change": ("Rate change over 12 months", "{:+.2f} points", "How much the central bank's rate rose (+) or fell (−) in the past year."),
     "curve_10y_minus_3m": ("Long minus short rates", "{:+.2f} points", "10-year rate minus 3-month rate. Below zero ('inverted') has often come before recessions."),
     "jobless_claims_yoy": ("New jobless claims vs last year", "{:+.0f}%", "New unemployment claims compared with a year ago (4-week average)."),

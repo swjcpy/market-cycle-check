@@ -32,7 +32,7 @@ class Indicator:
     window: int | None = None   # None = expanding percentile; N = rolling over the last N OBSERVATIONS
                                 # (not months: 20 quarterly observations = 5 years)
     transform: str = "level"    # "level" | "ma_dev" (daily only: level / trailing mean - 1) | "ma_diff" (level - trailing mean)
-                                # | "yoy" (% change vs 12 months earlier) | "diff12" (level minus level 12 months earlier)
+                                # | "yoy" (% change vs 12 months earlier) | "diff12" / "diff3" (level minus level 12 / 3 months earlier)
     transform_window: int | None = None  # months in the trailing mean for "ma_dev"
     smooth: int = 0             # daily only: trailing mean over this many raw observations before month-end sampling
     lag_days: int = 0           # daily only: days between an observation's date and its release (weekly claims: 5)
@@ -62,6 +62,11 @@ CYCLES = {
         # price-only valuation: how far the S&P 500 sits above its 10-year average
         Indicator("sp500_vs_10y_trend", "yahoo:^GSPC", "daily", sign=1, min_history=60,
                   transform="ma_dev", transform_window=120),
+        # Shiller CAPE: the S&P 500's price divided by the average of the last 10 years of inflation-adjusted earnings. High = expensive.
+        # Values are dated the 1st (history) plus the latest day; multpl.com republishes Shiller's series (checked against his workbook).
+        # Scored against the last 30 years (360 months) only: valuation levels drift up over the decades, so against all history since
+        # 1871 it would read "extremely expensive" almost every month since the 1990s and add nothing.
+        Indicator("cape", "cape:multpl", "daily", sign=1, min_history=60, window=360),
         # Michigan survey (dated the 1st, revised, weak contrarian signal: low confidence). Used from the end of the next month.
         Indicator("consumer_sentiment", "fred:UMCSENT", "monthly", sign=1, min_history=60,
                   lag_months=2, ffill_limit=2),
@@ -74,6 +79,8 @@ CYCLES = {
                   other=Series("fred:PCEPILFE", "monthly", lag_months=3, transform="yoy"), combine="minus"),
         # is the central bank tightening or easing? rising rates = tightening (falling rates are usually a sign of trouble)
         Indicator("policy_rate_12m_change", "fred:DFF", "daily", sign=-1, min_history=60, transform="diff12"),
+        # the same, over 3 months: a fresh hike or cut shows up quickly instead of waiting for the 12-month window
+        Indicator("policy_rate_3m_change", "fred:DFF", "daily", sign=-1, min_history=60, transform="diff3"),
         # steep curve = easy conditions; inverted = tight
         Indicator("curve_10y_minus_3m", "fred:T10Y3M", "daily", sign=1, min_history=60),
     )),

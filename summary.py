@@ -12,7 +12,7 @@ import pandas as pd
 
 import plain
 from cycles import CYCLES
-from data import CACHE_DIR, fetch_yahoo_daily
+from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
 from engine import _fetch, compute_cycle
 
 HISTORY_FROM = "1995-01-01"
@@ -24,6 +24,8 @@ MAX_AGE_DAYS = {"daily": 14, "monthly": 140, "quarterly": 260}  # flagged stale 
 MIN_CONFIRM_HOURS = 6                          # ...and the change must persist at least this long, so quick restarts cannot confirm it
 VOTING = ("psychology", "credit", "economy", "policy", "realestate", "bonds")  # profits (saturated) and distressed (overlaps credit) do not vote
 MIN_STAGE_N = 15
+NOTICE_DAYS = 45                               # a central-bank rate move inside this window is called out on the page
+NOTICE_MIN_MOVE = 0.20                         # percentage points, net over the window (month-end quirks are ~0.05)
 SCHEMA = 2                                     # bump when the JSON layout changes; the server refuses older files
 
 
@@ -105,9 +107,13 @@ def _health(name: str) -> list[dict]:
                 rows.append(dict(cycle=name, source=spec.source, last=None, days_old=None, stale=True, note=str(e)[:80]))
                 continue
             age = (today - last).days
+            note = ""
+            status = CACHE_DIR / "multpl_cape.status"
+            if spec.source.startswith("cape:") and status.exists():
+                note = "latest refresh failed, showing the saved copy (" + status.read_text()[:60] + ")"
             # a monthly/quarterly series is dated the 1st of its period, so allow the whole period plus release delay
             rows.append(dict(cycle=name, source=spec.source, last=last.strftime("%Y-%m-%d"), days_old=age,
-                             stale=age > MAX_AGE_DAYS[spec.freq], note=""))
+                             stale=age > MAX_AGE_DAYS[spec.freq], note=note))
     return rows
 
 
@@ -128,6 +134,43 @@ def _indicators(name: str, df: pd.DataFrame) -> list[dict]:
                         score=_clean(s), band=band(s) if s is not None else None,
                         hotter_than=None if s is None else round((s + 2) / 4 * 100)))
     return out
+
+
+NOTICE_MAX_AGE_DAYS = 10                       # a notice needs a recent observation, else the feed is stale and we say nothing
+
+
+def _rate_notice(today: pd.Timestamp | None = None) -> dict | None:
+    """A fixed rule (not fitted): if the effective fed funds rate moved by >= 0.20 points over roughly the last six weeks
+    (a 45-day window; the median of its first five days is the baseline, so a move older than 42 days no longer counts), say so.
+    The scores themselves are slower by design (they compare with 3, 6 and 12 months ago)."""
+    try:
+        s = fetch_series("DFF")
+    except Exception:  # noqa: BLE001
+        return None
+    today = pd.Timestamp.today().normalize() if today is None else today
+    if (today - s.index[-1]).days > NOTICE_MAX_AGE_DAYS:
+        return None
+    last = s.index[-1]
+    if (last + pd.offsets.BDay(2)).month != last.month:
+        s = s.iloc[:-1]                  # month-end quirks (one-day blips) cannot be confirmed yet: judge by the day before
+    win = s[s.index >= s.index[-1] - pd.Timedelta(days=NOTICE_DAYS)]
+    if len(win) < 5:
+        return None
+    base = float(win.iloc[:5].median())                  # the median of the first days ignores a one-day month-end blip
+    now = float(win.iloc[-1])
+    net = round(now - base, 4)                            # DFF has two decimals: round away float noise so 0.15 / 0.20 are exact
+    if abs(net) < NOTICE_MIN_MOVE:
+        return None
+    steps = win.diff().dropna().round(4)
+    same_way = steps[steps * net > 0]                   # steps in the direction of the net move
+    big = same_way[same_way.abs() >= 0.15]
+    when = (big if len(big) else same_way).index[-1]     # the day the move took effect: the last sizeable step, not a blip
+    size = round(abs(net) / 0.05) * 0.05                # the effective rate differs from the announced step by a few hundredths
+    verb = "raised" if net > 0 else "cut"
+    date_text = f"The change took effect on {when.day} {when.strftime('%b %Y')}. " if len(big) else "The move happened gradually over recent weeks. "
+    return dict(key="policy", date=when.strftime("%Y-%m-%d"), change=round(net, 2), level=round(now, 2),
+                text=f"The central bank {verb} its overnight lending rate (the federal funds rate) by about {size:.2f} points, to about {now:.2f}%. "
+                     f"{date_text}The gauges compare with 3 to 12 months ago, so they react to a change like this gradually.")
 
 
 def _agreement(cycles: list[dict]) -> dict:
@@ -307,6 +350,9 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
                     stage_text=stage_sentence, as_of=h.index[-1].strftime("%Y-%m-%d"),
                     history=[[d.strftime("%Y-%m-%d"), round(float(v), 2)] for d, v in h.loc[HISTORY_FROM:].items()],
                     recessions=cycles[0]["recessions"], track=record, **plain.HEADLINE[hb])
+    notices = [n for n in (_rate_notice(),) if n]
+    for c in cycles:
+        c["notice"] = next((n["text"] for n in notices if n["key"] == c["key"]), None)
     health = [r for n in plain.ORDER for r in _health(n)]
     for c in cycles:   # how fresh the underlying data really is (the score date can be newer than the slowest input)
         rows = [r for r in health if r["cycle"] == c["key"]]
@@ -314,7 +360,7 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
         c["newest_data"], c["oldest_data"] = (lasts[-1], lasts[0]) if lasts else (None, None)
         c["input_missing"] = any(not r["last"] for r in rows)
     return dict(schema=SCHEMA, generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), headline=headline, cycles=cycles,
-                agree=_agreement(cycles), events=_events(cycles) if record_events else [],
+                notices=notices, agree=_agreement(cycles), events=_events(cycles) if record_events else [],
                 health=health, disclaimer=plain.DISCLAIMER)
 
 

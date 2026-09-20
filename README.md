@@ -19,7 +19,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m pytest -q                     # real-data tests skip until data/ has been populated
 ```
 
-Data comes from FRED's public CSV endpoint and Yahoo Finance's unofficial chart endpoint (S&P 500 only). Neither is redistributed
+Data comes from FRED's public CSV endpoint, Yahoo Finance's unofficial chart endpoint (S&P 500 only), and multpl.com's
+table of Robert Shiller's CAPE series (Shiller's own workbook stops in 2024; multpl was checked against it over 1881-2024, mean
+difference 0.02%). Please credit Shiller and multpl if you reuse those values, and see their terms. Neither is redistributed
 here; `data/` is git-ignored. Check each provider's terms before reusing the data.
 
 ## How it works

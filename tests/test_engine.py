@@ -57,9 +57,9 @@ def test_config_is_well_formed():
         assert len(set(names)) == len(names), cname
         for i in cyc.indicators:
             assert i.sign in (1, -1) and i.min_history > 0 and i.lag_months >= 0 and i.ffill_limit >= 0
-            assert i.source.split(":")[0] in ("fred", "yahoo") and i.freq in ("daily", "monthly", "quarterly")
+            assert i.source.split(":")[0] in ("fred", "yahoo", "cape") and i.freq in ("daily", "monthly", "quarterly")
             assert i.freq == "daily" or i.lag_months >= 1
-            assert i.transform in ("level", "ma_dev", "ma_diff", "yoy", "diff12")
+            assert i.transform in ("level", "ma_dev", "ma_diff", "yoy", "diff12", "diff3")
             assert i.transform not in ("ma_dev", "ma_diff") or (i.freq == "daily" and i.transform_window)
             assert i.lag_days == 0 or i.freq == "daily"
             assert (i.other is None) == (i.combine is None) and i.combine in (None, "minus", "ratio")
@@ -126,14 +126,16 @@ def test_stale_sparse_reading_expires(synth, monkeypatch):
 
 
 def test_config_pins_psychology_parameters():
-    vix, spx, sent = CYCLES["psychology"].indicators
+    vix, spx, cape, sent = CYCLES["psychology"].indicators
+    assert (cape.source, cape.freq, cape.sign, cape.min_history, cape.lag_months, cape.window, cape.transform) == ("cape:multpl", "daily", 1, 60, 0, 360, "level")
     assert (vix.source, vix.freq, vix.sign, vix.min_history, vix.lag_months, vix.window, vix.transform) == ("fred:VIXCLS", "daily", -1, 60, 0, None, "level")
     assert (spx.source, spx.freq, spx.sign, spx.min_history, spx.transform, spx.transform_window) == ("yahoo:^GSPC", "daily", 1, 60, "ma_dev", 120)
     assert (sent.source, sent.freq, sent.sign, sent.min_history, sent.lag_months, sent.ffill_limit, sent.window) == ("fred:UMCSENT", "monthly", 1, 60, 2, 2, None)
 
 
 def test_config_pins_policy_parameters():
-    rr, chg, curve = CYCLES["policy"].indicators
+    rr, chg, chg3, curve = CYCLES["policy"].indicators
+    assert (chg3.source, chg3.freq, chg3.sign, chg3.transform, chg3.min_history, chg3.lag_months, chg3.ffill_limit) == ("fred:DFF", "daily", -1, "diff3", 60, 0, 0)
     assert (rr.source, rr.freq, rr.sign, rr.combine, rr.ffill_limit, rr.min_history) == ("fred:DFF", "daily", -1, "minus", 3, 60)
     assert (rr.other.source, rr.other.freq, rr.other.lag_months, rr.other.transform) == ("fred:PCEPILFE", "monthly", 3, "yoy")
     assert (chg.source, chg.sign, chg.transform, chg.min_history) == ("fred:DFF", -1, "diff12", 60)
@@ -227,6 +229,17 @@ def test_change_rounds_away_float_noise_so_ties_stay_ties():
     assert 4.1 - 4.3 != -0.2                                       # the raw float difference is noisy
     out = engine._change(pd.Series([4.3, 4.1], index=idx), "diff12", month_end=False)
     assert out.iloc[1] == -0.2
+
+
+def test_diff3_compares_with_exactly_three_months_earlier_including_month_end_edge_cases():
+    d = pd.Series([3.63, 3.63, 3.88], index=pd.to_datetime(["2026-05-31", "2026-06-30", "2026-08-31"]))
+    lv = engine._levels(Indicator("r", "fred:R", "daily", -1, 5, transform="diff3"), d)
+    assert lv.loc["2026-08-31"] == pytest.approx(3.88 - 3.63)                  # vs 2026-05-31, three month-ends earlier
+    assert np.isnan(lv.loc["2026-06-30"]) and np.isnan(lv.loc["2026-07-31"])   # no observation 3 months before
+    feb = pd.Series([1.0, 2.0], index=pd.to_datetime(["2025-11-30", "2026-02-28"]))
+    assert engine._levels(Indicator("r", "fred:R", "daily", -1, 5, transform="diff3"), feb).loc["2026-02-28"] == pytest.approx(1.0)   # Nov-30 + 3mo lands on Feb-28
+    m = pd.Series([1.0, 4.0], index=pd.to_datetime(["2026-01-01", "2026-04-01"]))
+    assert engine._levels(Indicator("m", "fred:M", "monthly", 1, 5, lag_months=2, transform="diff3"), m).loc["2026-05-31"] == pytest.approx(3.0)
 
 
 def test_smoothing_is_trailing_and_needs_a_full_window():
@@ -590,7 +603,7 @@ def test_real_policy_inflation_lag_is_exactly_as_documented(monkeypatch):
 def test_real_policy_regime_anchors():
     """Sign/scale sanity anchors chosen WITH hindsight; they catch flipped signs, not accuracy."""
     d = engine.compute_cycle("policy")
-    assert d.loc["2009-03-31", "policy_score"] >= 1.0 and d.loc["2009-03-31", "real_policy_rate_score"] >= 1.5   # zero rates
+    assert d.loc["2009-03-31", "policy_score"] >= 0.75 and d.loc["2009-03-31", "real_policy_rate_score"] >= 1.5   # zero rates (0.97 with the 3-month indicator; 1.57 without)
     assert d.loc["2000-06-30", "policy_score"] <= -1.0                                                          # hiking cycle
     assert d.loc["2023-08-31", "policy_score"] <= -0.5 and d.loc["2023-08-31", "policy_rate_12m_change_score"] <= -1.0
     assert d.loc["2001-12-31", "policy_rate_12m_change_score"] >= 1.0                                           # rapid cuts
@@ -840,3 +853,234 @@ def test_corrupt_cache_with_network_down_raises(cache):
     (cache / "BAA10Y.csv").write_text("garbage")
     with mock.patch("data.requests.get", side_effect=requests.ConnectionError("down")), pytest.raises(requests.RequestException):
         data.fetch_series("BAA10Y", refresh=True)
+
+
+# ---- CAPE (multpl.com table) ------------------------------------------------------------------------------------
+def cape_html(n=1600, last="Sep 18, 2026", value=40.94, bad=None, hist_scale=1.0):
+    rows = [f'<tr class="odd"><td>{last}</td><td>\n&#x2002;\n{value}\n</td></tr>']
+    d = pd.Timestamp("2026-09-01")
+    for i in range(n):
+        v = round((40.0 + (i % 7) * 0.5) * hist_scale, 1) if bad is None or i != 5 else bad
+        rows.append(f'<tr class="even"><td>{d:%b} {d.day}, {d.year}</td><td>\n&#x2002;\n{v}\n</td></tr>')
+        d = d - pd.DateOffset(months=1)
+    return "<table id=\"datatable\">" + "".join(rows) + "</table>"
+
+
+def test_parse_cape_reads_history_and_latest_day_in_order():
+    s = data.parse_cape(cape_html())
+    assert len(s) == 1601 and s.index.is_monotonic_increasing and s.index[-1] == pd.Timestamp("2026-09-18") and s.iloc[-1] == 40.94
+    assert s.loc["2026-09-01"] == 40.0 and s.index[0] < pd.Timestamp("1900-01-01")
+
+
+@pytest.mark.parametrize("html_text", ["<html>blocked</html>", "", cape_html(n=100), cape_html(bad=250.0), cape_html(bad=-1.0).replace("-1.0", "0.5")])
+def test_parse_cape_rejects_bad_pages(html_text):
+    with pytest.raises(ValueError):
+        data.parse_cape(html_text)
+
+
+def test_parse_cape_rejects_duplicate_dates():
+    dup = cape_html().replace("Sep 18, 2026", "Sep 1, 2026", 1)
+    with pytest.raises(ValueError):
+        data.parse_cape(dup)
+
+
+def test_fetch_cape_cache_and_fallbacks(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "CACHE_DIR", tmp_path)
+    good = cape_html()
+    with mock.patch("data.requests.get", return_value=FakeResp(good)):
+        first = data.fetch_cape(refresh=True)
+    path = tmp_path / "multpl_cape.csv"
+    before = path.read_text()
+    assert len(first) == 1601 and not list(tmp_path.glob("*.tmp"))
+    with mock.patch("data.requests.get", side_effect=AssertionError("fresh cache must not hit the network")):
+        assert len(data.fetch_cape()) == 1601                                            # fresh cache: no network
+    for bad in (FakeResp("<html>x</html>"), FakeResp(cape_html(n=1520)), FakeResp("", 500), requests.ConnectionError("down")):
+        with mock.patch("data.requests.get", side_effect=bad if isinstance(bad, Exception) else None,
+                        return_value=None if isinstance(bad, Exception) else bad):
+            assert len(data.fetch_cape(refresh=True)) == 1601                             # falls back to the cache
+        assert path.read_text() == before
+    older = cape_html(last="Sep 10, 2026")
+    with mock.patch("data.requests.get", return_value=FakeResp(older)):
+        assert data.fetch_cape(refresh=True).index[-1] == pd.Timestamp("2026-09-18")     # a download older than the cache is refused
+    import os, time
+    old = time.time() - 15 * 86400
+    os.utime(path, (old, old))
+    with mock.patch("data.requests.get", return_value=FakeResp("", 500)), pytest.raises(RuntimeError):
+        data.fetch_cape(refresh=True)
+    path.unlink()
+    with mock.patch("data.requests.get", side_effect=requests.ConnectionError("down")), pytest.raises(requests.RequestException):
+        data.fetch_cape(refresh=True)
+
+
+def test_cape_source_dispatch(monkeypatch):
+    monkeypatch.setattr(engine, "fetch_cape", lambda refresh: pd.Series([1.0]))
+    assert engine._fetch(Indicator("c", "cape:multpl", "daily", 1, 5), False).iloc[0] == 1.0
+    with pytest.raises(NotImplementedError):
+        engine._fetch(Indicator("c", "cape:other", "daily", 1, 5), False)
+
+
+@needs_cache
+def test_real_cape_regime_anchors_and_shape():
+    if not (data.CACHE_DIR / "multpl_cape.csv").exists():
+        pytest.skip("no CAPE cache")
+    d = engine.compute_cycle("psychology")
+    assert d.loc["1999-12-31", "cape"] > 43 and d.loc["1999-12-31", "cape_score"] >= 1.9           # the 1999 peak (Shiller's record: 44.2)
+    assert d.loc["2009-03-31", "cape_score"] <= 0.0                                               # crisis low valuation
+    assert d.loc["2009-03-31", "psychology_score"] <= -1.5 and d.loc["2017-12-31", "psychology_score"] >= 1.0
+
+
+def test_cape_parse_boundaries_and_layout_guards():
+    assert len(data.parse_cape(cape_html(n=1499))) == 1500                                   # 1500 rows incl. latest day: accepted
+    with pytest.raises(ValueError):
+        data.parse_cape(cape_html(n=1498))                                                    # 1499 rows: rejected
+    assert data.parse_cape(cape_html(bad=4.78)).min() == 4.78                                # the real 1920 low is valid
+    assert data.parse_cape(cape_html(bad=3.0)).min() == 3.0 and data.parse_cape(cape_html(bad=100.0)).max() == 100.0   # range ends inclusive
+    shifted = cape_html().replace("Jul 1, 2026", "Jul 15, 2026", 1)
+    with pytest.raises(ValueError):
+        data.parse_cape(shifted)                                                              # history rows must be on the 1st
+
+
+def test_fetch_cape_returns_new_data_rejects_jumps_sends_an_identifying_user_agent_and_flags_failures(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "CACHE_DIR", tmp_path)
+    seen = {}
+    def fake_get(url, headers=None, timeout=None):
+        seen["ua"] = headers["User-Agent"]
+        return FakeResp(cape_html(last="Sep 19, 2026", value=41.5))
+    with mock.patch("data.requests.get", side_effect=fake_get):
+        first = data.fetch_cape(refresh=True)
+    assert first.iloc[-1] == 41.5 and "github.com" in seen["ua"] and not (tmp_path / "multpl_cape.status").exists()   # returns the NEW data
+    with mock.patch("data.requests.get", return_value=FakeResp(cape_html(last="Sep 20, 2026", value=60.0))):
+        assert data.fetch_cape(refresh=True).iloc[-1] == 41.5                                # +45% in a day: a broken page, keep the cache
+    assert any(w in (tmp_path / "multpl_cape.status").read_text() for w in ("jumped", "inconsistent"))   # ...and the failure is recorded for the health table
+    with mock.patch("data.requests.get", return_value=FakeResp(cape_html(last="Sep 20, 2026", value=41.9))):
+        assert data.fetch_cape(refresh=True).iloc[-1] == 41.9
+    assert not (tmp_path / "multpl_cape.status").exists()                                     # a good refresh clears the flag
+    (tmp_path / "multpl_cape.csv").write_text("date,cape\n2026-09-01,40.0\n")               # a truncated cache is treated as missing
+    with mock.patch("data.requests.get", side_effect=requests.ConnectionError("down")), pytest.raises(requests.RequestException):
+        data.fetch_cape(refresh=True)
+
+
+def test_health_and_page_show_a_failed_cape_refresh(tmp_path, monkeypatch):
+    import summary, server, json
+    monkeypatch.setattr(summary, "CACHE_DIR", tmp_path)
+    (tmp_path / "multpl_cape.status").write_text("2026-09-20 15:00 UTC: HTTP 403")
+    monkeypatch.setattr(summary, "_fetch", lambda spec, refresh: pd.Series([1.0], index=[pd.Timestamp.today().normalize()]))
+    rows = summary._health("psychology")
+    cape = next(r for r in rows if r["source"] == "cape:multpl")
+    assert "saved copy" in cape["note"] and "HTTP 403" in cape["note"] and cape["stale"] is False
+    assert all(not r["note"] for r in rows if r["source"] != "cape:multpl")
+    real = json.loads((Path(__file__).parent.parent / "data" / "summary.json").read_text()) if (Path(__file__).parent.parent / "data" / "summary.json").exists() else None
+    if real:
+        real["health"].append(dict(cycle="psychology", source="cape:multpl", last="2026-09-18", days_old=2, stale=False, note="x"))
+        page = server.render(real, "now", None)
+        assert "could not be refreshed" in page and "saved copy" in page
+
+
+def test_plain_cape_format_and_text():
+    import plain
+    label, fmt, expl = plain.INDICATOR_INFO["cape"]
+    assert fmt.format(40.94) == "40.9" and "1999" in expl and "CAPE" in label
+
+
+def test_cape_jump_guard_only_applies_to_a_fresh_cache_and_backoff_and_range(tmp_path, monkeypatch):
+    import os, time
+    monkeypatch.setattr(data, "CACHE_DIR", tmp_path)
+    with mock.patch("data.requests.get", return_value=FakeResp(cape_html(value=40.0))):
+        data.fetch_cape(refresh=True)
+    path, status = tmp_path / "multpl_cape.csv", tmp_path / "multpl_cape.status"
+    crash = FakeResp(cape_html(last="Sep 20, 2026", value=28.0))                              # a genuine -30% crash
+    with mock.patch("data.requests.get", return_value=crash):
+        assert data.fetch_cape(refresh=True).iloc[-1] == 40.0                               # fresh cache: rejected as implausible
+    assert status.exists()
+    old = time.time() - 4 * 86400
+    os.utime(path, (old, old)); status.unlink()
+    with mock.patch("data.requests.get", return_value=crash):
+        assert data.fetch_cape(refresh=True).iloc[-1] == 28.0                               # 4-day-old cache: the crash is accepted
+    for day, (pct, ok) in zip((21, 23), ((0.10, True), (0.26, False))):                      # between 10% and 25% vs the threshold
+        cached_last = data.fetch_cape().iloc[-1]
+        with mock.patch("data.requests.get", return_value=FakeResp(cape_html(last=f"Sep {day}, 2026", value=round(cached_last * (1 + pct), 2)))):
+            assert bool(data.fetch_cape(refresh=True).iloc[-1] != cached_last) is ok
+        with mock.patch("data.requests.get", return_value=FakeResp(cape_html(last=f"Sep {day + 1}, 2026", value=cached_last))):
+            data.fetch_cape(refresh=True)
+    # back-off: after a failure, calls without refresh do not touch the network for a few hours
+    with mock.patch("data.requests.get", side_effect=requests.ConnectionError("down")):
+        data.fetch_cape(refresh=True)
+    old = time.time() - 2 * 86400
+    os.utime(path, (old, old))
+    with mock.patch("data.requests.get", side_effect=AssertionError("must not retry yet")):
+        assert len(data.fetch_cape()) >= 1500
+    os.utime(status, (time.time() - 7 * 3600,) * 2)
+    with mock.patch("data.requests.get", return_value=FakeResp(cape_html(value=28.5))) as g:
+        data.fetch_cape()
+        assert g.called                                                                       # past the back-off: it retries
+    with pytest.raises(ValueError):
+        data.parse_cape(cape_html(bad=150.0))                                                 # the range guard's upper end is 100
+
+
+def _seed_cape(tmp_path, monkeypatch, value=40.0):
+    monkeypatch.setattr(data, "CACHE_DIR", tmp_path)
+    with mock.patch("data.requests.get", return_value=FakeResp(cape_html(value=value))):
+        data.fetch_cape(refresh=True)
+    return tmp_path / "multpl_cape.csv", tmp_path / "multpl_cape.status"
+
+
+@pytest.mark.parametrize("age_days,jump_rejected", [(2.9, True), (3.1, False)])
+def test_cape_jump_guard_boundary_at_three_days(tmp_path, monkeypatch, age_days, jump_rejected):
+    import os, time
+    path, status = _seed_cape(tmp_path, monkeypatch)
+    os.utime(path, (time.time() - age_days * 86400,) * 2)
+    with mock.patch("data.requests.get", return_value=FakeResp(cape_html(last="Sep 20, 2026", value=28.0))):
+        got = data.fetch_cape(refresh=True).iloc[-1]
+    assert bool(got == 40.0) is jump_rejected
+
+
+@pytest.mark.parametrize("cache_age,status_age,network", [(2, 1, False), (2, 7, True), (2, 4, False), (2, 5.9, False), (13.9, 1, False), (14.1, 1, True)])
+def test_cape_backoff_and_stale_limit_boundaries(tmp_path, monkeypatch, cache_age, status_age, network):
+    import os, time
+    path, status = _seed_cape(tmp_path, monkeypatch)
+    os.utime(path, (time.time() - cache_age * 86400,) * 2)
+    status.write_text("x"); os.utime(status, (time.time() - status_age * 3600,) * 2)
+    calls = []
+    def fake_get(*a, **k):
+        calls.append(1)
+        raise requests.ConnectionError("down")
+    with mock.patch("data.requests.get", side_effect=fake_get):
+        if cache_age > 14:
+            with pytest.raises(RuntimeError):
+                data.fetch_cape()
+        else:
+            assert len(data.fetch_cape()) >= 1500
+    assert bool(calls) is network
+
+
+def test_cape_status_and_temp_failures_never_break_the_fallback(tmp_path, monkeypatch):
+    import os
+    path, status = _seed_cape(tmp_path, monkeypatch)
+    real_replace = os.replace
+    def failing_replace(src, dst):
+        if str(dst).endswith(".status"):
+            raise OSError("disk full")
+        return real_replace(src, dst)
+    monkeypatch.setattr(data.os, "replace", failing_replace)
+    with mock.patch("data.requests.get", return_value=FakeResp("<html>blocked</html>")):
+        assert len(data.fetch_cape(refresh=True)) >= 1500                                    # marker write fails: still returns the cache
+    with mock.patch("data.requests.get", side_effect=OSError("network stack error")):
+        assert len(data.fetch_cape(refresh=True)) >= 1500                                    # OSError from requests is a fallback too
+    monkeypatch.setattr(data.os, "replace", real_replace)
+    monkeypatch.setattr(pd.Series, "to_csv", mock.Mock(side_effect=OSError("disk full")))
+    with mock.patch("data.requests.get", return_value=FakeResp(cape_html(last="Sep 21, 2026"))):
+        assert len(data.fetch_cape(refresh=True)) >= 1500
+    assert not list(tmp_path.glob("*.tmp"))                                                   # no temp files leak
+
+
+def test_cape_consistency_checks_hold_at_any_cache_age(tmp_path, monkeypatch):
+    import os, time
+    path, status = _seed_cape(tmp_path, monkeypatch)
+    os.utime(path, (time.time() - 5 * 86400,) * 2)                                            # old cache: the age-based jump check is off
+    garbled = cape_html(last="Sep 20, 2026", value=4.0)                                       # latest value 10x too small
+    with mock.patch("data.requests.get", return_value=FakeResp(garbled)):
+        assert data.fetch_cape(refresh=True).iloc[-1] == 40.0                                 # still rejected: inconsistent with the month before
+    shifted = cape_html(last="Sep 20, 2026", value=40.0, hist_scale=1.5)                      # every history value shifted by 50%
+    with mock.patch("data.requests.get", return_value=FakeResp(shifted)):
+        assert data.fetch_cape(refresh=True).iloc[-1] == 40.0                                 # history does not match the cache
+    assert "does not match" in status.read_text() or "inconsistent" in status.read_text()

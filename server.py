@@ -119,6 +119,10 @@ def month_name(iso: str | None) -> str:
         return "?"
 
 
+def notice_html(c: dict) -> str:
+    return f'<p class="limit"><b>Recent change.</b> {esc(str(c["notice"]))}</p>' if c.get("notice") else ""
+
+
 def data_line(c: dict) -> str:
     """Freshness of the inputs. Monthly/quarterly series are dated by the period they COVER, so say 'covers up to'."""
     if c.get("input_missing"):
@@ -163,7 +167,7 @@ def render_card(c: dict) -> str:
       <span class="more">Tap for details</span>
     </summary>
     <div class="detail">
-      <p><b>What it measures.</b> {esc(c["measures"])}</p>
+      {notice_html(c)}<p><b>What it measures.</b> {esc(c["measures"])}</p>
       <p><b>Why it matters.</b> {esc(c["why"])}</p>
       {you}
       <h4>The readings behind it</h4>
@@ -211,11 +215,17 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
     now = datetime.now(timezone.utc)
     recent = [e for e in s["events"] if event_is_recent(e, now)]
     banner = ""
+    for n in (s.get("notices") or []):
+        if isinstance(n, dict) and n.get("text"):
+            banner += f'<div class="banner"><b>Recent change</b><br>{esc(str(n["text"]))}</div>'
     if recent:
         items = "".join(f'<li><b>{esc(str(e.get("title", "A gauge")))}</b> moved from {esc(str(e.get("frm", "?")))} to {esc(str(e.get("to", "?")))} ({esc(str(e.get("date", "")))})</li>' for e in recent)
         banner += f'<div class="banner"><b>Changes in the last {EVENT_DAYS} days</b><ul>{items}</ul></div>'
     if error:
         banner += f'<div class="banner warn"><b>Data may be out of date.</b> The last refresh failed ({esc(error)}); showing the previous numbers.</div>'
+    saved = [r for r in s["health"] if r.get("note") and not r["stale"]]
+    if saved:
+        banner += '<div class="banner warn"><b>One data source could not be refreshed</b> and the page is using its last saved copy (see Data health at the bottom).</div>'
     stale = [r for r in s["health"] if r["stale"]]
     if stale:
         banner += f'<div class="banner warn"><b>{len(stale)} data feed(s) look out of date</b> (see the bottom of the page). Readings that use them may be stale.</div>'
@@ -229,7 +239,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
         if r["source"] not in seen:
             seen.add(r["source"]); hrows.append(r)
     health = "".join(f'<tr><td>{esc(r["source"].split(":")[-1])}</td><td>{esc(r["last"] or "?")}</td><td class="num">{"?" if r["days_old"] is None else r["days_old"]}</td>'
-                     f'<td>{"⚠ stale" if r["stale"] else "ok"}</td></tr>' for r in hrows)
+                     f'<td>{"⚠ stale" if r["stale"] else "⚠ saved copy" if r.get("note") else "ok"}</td></tr>' for r in hrows)
     drivers = "; ".join(f'{esc(d["title"])} is {esc(d["band_word"].lower())} ({d["score"]:+.1f})' for d in h["drivers"] if d["score"] is not None)
     do = "".join(f"<li>{esc(x)}</li>" for x in h["do"])
     avoid = "".join(f"<li>{esc(x)}</li>" for x in h["avoid"])

@@ -704,3 +704,139 @@ def test_future_since_is_reset_not_a_silent_block(files):
     summary.STATE_FILE.write_text(json.dumps({"credit": {"band": "normal", "pending": "warm", "n": 3, "since": "9999-01-01T00:00:00+00:00"}}))
     assert summary._events(cyc("warm"), T0) == []                                 # clock restarted now
     assert len(summary._events(cyc("warm"), T0 + timedelta(hours=7))) == 1        # and confirms normally afterwards
+
+
+def _dff(values, end="2026-09-17"):
+    idx = pd.date_range(end=end, periods=len(values), freq="D")
+    return pd.Series(values, index=idx)
+
+
+TODAY = pd.Timestamp("2026-09-19")
+
+
+def test_rate_notice_rules(monkeypatch):
+    def notice(series, today=TODAY):
+        monkeypatch.setattr(summary, "fetch_series", lambda sid: series)
+        return summary._rate_notice(today)
+    hike = notice(_dff([3.63] * 60 + [3.88]))
+    assert hike["change"] == 0.25 and hike["level"] == 3.88 and hike["date"] == "2026-09-17" and "raised" in hike["text"]
+    assert "about 0.25 points" in hike["text"] and "3.88%" in hike["text"] and "17 Sep 2026" in hike["text"] and "federal funds" in hike["text"]
+    cut = notice(_dff([4.00] * 50 + [3.75] * 11))
+    assert cut["change"] == -0.25 and "cut" in cut["text"] and cut["date"] == "2026-09-07"
+    assert notice(_dff([3.63] * 60 + [3.58])) is None                              # a 0.05 month-end quirk is not news
+    assert notice(_dff([3.63] * 20 + [3.88] * 50)) is None                         # the move was 50 days ago: outside the window
+    assert notice(_dff([3.63] * 40 + [3.75] * 10 + [3.88] * 11)) is not None       # two steps within the window add up
+    assert notice(_dff([3.63] * 4)) is None
+    monkeypatch.setattr(summary, "fetch_series", mock.Mock(side_effect=OSError("down")))
+    assert summary._rate_notice(TODAY) is None
+
+
+def test_rate_notice_threshold_window_and_size_rounding(monkeypatch):
+    def notice(vals, today=TODAY):
+        monkeypatch.setattr(summary, "fetch_series", lambda sid: _dff(vals))
+        return summary._rate_notice(today)
+    assert notice([3.63] * 60 + [3.82]) is None                                   # 0.19: below the threshold
+    assert notice([3.63] * 60 + [3.83]) is not None                               # 0.20: fires
+    for age, fires in ((42, True), (43, False)):                                   # the move's age vs the window (baseline = median of its first 5 days)
+        vals = [3.63] * (60 - age) + [3.88] * (age + 1)
+        assert (notice(vals) is not None) is fires, age
+    assert "about 0.25 points" in notice([3.63] * 60 + [3.89])["text"]            # 0.26 rounds to the nearest 0.05
+    assert "about 0.50 points" in notice([3.63] * 60 + [4.13])["text"] and "raised" in notice([3.63] * 60 + [4.13])["text"]
+
+
+def test_rate_notice_ignores_blips_and_stale_feeds(monkeypatch):
+    def notice(vals, today=TODAY):
+        monkeypatch.setattr(summary, "fetch_series", lambda sid: _dff(vals))
+        return summary._rate_notice(today)
+    blip = [3.63] * 25 + [3.88] * 29 + [3.98, 3.88] + [3.88] * 4                  # a hike 33 days ago, then a +0.10 month-end blip
+    n = notice(blip)
+    assert n is not None and n["date"] == "2026-08-14" and n["level"] == 3.88 and n["change"] == 0.25   # the hike day, not the blip
+    spike = [3.63] * 60 + [3.63 + 0.10]                                            # a lone 0.10 spike on the last day
+    assert notice(spike) is None
+    assert notice([3.63] * 60 + [3.88], today=pd.Timestamp("2026-09-27")) is not None    # 10 days after the last observation: still shown
+    assert notice([3.63] * 60 + [3.88], today=pd.Timestamp("2026-09-28")) is None        # 11 days: the feed is stale, say nothing
+
+
+def test_notice_reaches_the_policy_card_and_the_top_banner(monkeypatch):
+    frames = {k: _fake_frame(k, 0.0) for k in CYCLES}
+    monkeypatch.setattr(summary, "compute_cycle", lambda n, r=False, t=None: frames[n])
+    monkeypatch.setattr(summary, "track_record", lambda s, c: None); monkeypatch.setattr(summary, "_health", lambda n: [])
+    monkeypatch.setattr(summary, "fetch_series", lambda sid: _dff([3.63] * 60 + [3.88]))
+    real = summary._rate_notice
+    monkeypatch.setattr(summary, "_rate_notice", lambda: real(TODAY))
+    out = summary.build(record_events=False)
+    assert out["notices"][0]["key"] == "policy"
+    by = {c["key"]: c for c in out["cycles"]}
+    assert "raised its overnight lending rate" in by["policy"]["notice"] and by["credit"]["notice"] is None
+    page = server.render(json.loads(json.dumps(out, default=str)), "now", None)
+    assert page.count("raised its overnight lending rate") == 2 and "Recent change" in page          # top banner + the policy card
+    out["notices"][0]["text"] = "<b>x</b>"
+    out["cycles"][3]["notice"] = "<i>y</i>"
+    page2 = server.render(json.loads(json.dumps(out, default=str)), "now", None)
+    assert "<b>x</b>" not in page2 and "<i>y</i>" not in page2 and "&lt;i&gt;y&lt;/i&gt;" in page2      # banner AND card text are escaped
+    for bad in (None, "text", [], [None], [{"text": None}], [{"nope": 1}]):
+        broken = json.loads(json.dumps(out, default=str)); broken["notices"] = bad
+        assert "Market Cycle Check" in server.render(broken, "now", None)                              # malformed notices never break the page
+    monkeypatch.setattr(summary, "fetch_series", lambda sid: _dff([3.63] * 61))
+    assert summary.build(record_events=False)["notices"] == []
+
+
+def test_rate_notice_edges_month_end_blips_and_slow_drift(monkeypatch):
+    def notice(vals, end="2026-09-17", today=TODAY):
+        monkeypatch.setattr(summary, "fetch_series", lambda sid: _dff(vals, end))
+        return summary._rate_notice(today)
+    assert notice([3.63] * 3 + [3.88]) is None                                                  # fewer than 5 observations in the window
+    assert notice([3.63] * 4 + [3.88]) is not None                                              # exactly 5 observations: fires
+    assert notice([3.63] * 60 + [3.83])["change"] == 0.20 and notice([3.63] * 60 + [3.829]) is None     # exactly 0.20 fires, 0.199 does not
+    small = notice([3.63] * 40 + [3.83, 3.83, 3.83, 3.83, 3.83, 3.83])                          # a 0.20 step (>= 0.15)
+    assert small["date"] == "2026-09-12"
+    two = notice([3.63] * 40 + [3.83] * 6 + [4.05] * 10, end="2026-09-30", today=pd.Timestamp("2026-10-01"))
+    assert two is None or two["date"] != "2026-09-05"                                            # date is the LAST big step, not the first
+    hike_then_more = notice([3.63] * 30 + [3.88] * 10 + [4.13] * 10, end="2026-09-20", today=pd.Timestamp("2026-09-21"))
+    assert hike_then_more["date"] == "2026-09-11" and hike_then_more["level"] == 4.13
+    # a one-day blip on the last business day of the month is ignored until it is confirmed
+    assert notice([3.63] * 60 + [3.90], end="2026-09-30", today=pd.Timestamp("2026-10-01")) is None
+    assert notice([3.63] * 60 + [3.90], end="2026-09-29", today=pd.Timestamp("2026-10-01")) is None      # Monday before month-end: also unconfirmed
+    assert notice([3.63] * 60 + [3.90], end="2026-09-16", today=pd.Timestamp("2026-09-18")) is not None  # mid-month: a real move
+    drift = [3.63 + 0.005 * i for i in range(46)]                                                 # +0.225 in 45 tiny steps
+    d = notice(drift, end="2026-09-16", today=pd.Timestamp("2026-09-18"))
+    assert d is not None and "gradually over recent weeks" in d["text"] and "took effect" not in d["text"]
+
+
+def test_render_banner_and_table_label_for_stale_and_saved_copy():
+    s = json.loads(json.dumps(real_summary()))
+    s["health"] = [dict(cycle="c", source="fred:X", last="2026-01-01", days_old=300, stale=True, note="latest refresh failed"),
+                   dict(cycle="c", source="cape:multpl", last="2026-09-18", days_old=2, stale=False, note="saved"),
+                   dict(cycle="c", source="fred:Y", last="2026-09-18", days_old=2, stale=False, note="")]
+    page = server.render(s, "now", None)
+    assert "1 data feed(s) look out of date" in page and "could not be refreshed" in page
+    assert "⚠ stale" in page and "⚠ saved copy" in page and page.count("<td>ok</td>") == 1
+    s["health"] = [dict(cycle="c", source="fred:X", last="2026-01-01", days_old=300, stale=True, note="latest refresh failed")]
+    assert "could not be refreshed" not in server.render(s, "now", None)                        # a stale feed is not double-reported
+
+
+def test_rate_notice_big_step_boundary_and_month_end_window(monkeypatch):
+    def notice(vals, end="2026-09-17", today=pd.Timestamp("2026-09-19")):
+        monkeypatch.setattr(summary, "fetch_series", lambda sid: _dff(vals, end))
+        return summary._rate_notice(today)
+    for step, big in ((0.15, True), (0.18, True), (0.14, False)):                              # 0.14 + 0.06 = two small steps
+        vals = [3.63] * 30 + [round(3.63 + step, 2)] * 5 + [round(3.63 + 0.20, 2)] * 10
+        n = notice(vals, end="2026-09-16")
+        assert n is not None
+        assert ("took effect" in n["text"]) is big                                             # a single step >= 0.15 gets a date; two small ones do not
+    # the last observation is dropped only within two business days of month-end
+    base = [3.63] * 60 + [3.90]
+    assert notice(base, end="2026-09-28", today=pd.Timestamp("2026-09-29")) is not None      # Mon 28th: 2 bdays later is Wed 30th (same month)? kept
+    assert notice(base, end="2026-09-29", today=pd.Timestamp("2026-09-30")) is None          # Tue 29th: 2 bdays later is Oct 1: dropped
+    assert notice(base, end="2026-09-30", today=pd.Timestamp("2026-10-01")) is None
+    assert notice(base, end="2026-09-25", today=pd.Timestamp("2026-09-26")) is not None       # Fri 25th: kept
+    steps = [3.63] * 40 + [3.78] * 3 + [3.85] * 3 + [3.87] * 15                                  # 0.15 then 0.07 then 0.02 (sum 0.24)
+    n = notice(steps, end="2026-09-16", today=pd.Timestamp("2026-09-18"))
+    assert n is not None and n["date"] == "2026-08-27" and "took effect" in n["text"]
+
+
+def test_rate_notice_threshold_survives_float_noise(monkeypatch):
+    assert 3.26 - 3.06 < 0.20                                                     # the raw float difference is just under 0.20
+    monkeypatch.setattr(summary, "fetch_series", lambda sid: _dff([3.06] * 60 + [3.26]))
+    n = summary._rate_notice(pd.Timestamp("2026-09-19"))
+    assert n is not None and n["change"] == 0.2                                    # ...but it is exactly a 0.20 move: fires

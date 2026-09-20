@@ -9,7 +9,7 @@ import sys
 import pandas as pd
 
 from cycles import CYCLES, RECESSION_SERIES, Cycle, Indicator, Series
-from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
+from data import CACHE_DIR, fetch_cape, fetch_series, fetch_yahoo_daily
 
 
 def _pct(x: pd.Series, ind: Indicator) -> pd.Series:
@@ -20,9 +20,10 @@ def _pct(x: pd.Series, ind: Indicator) -> pd.Series:
 
 
 def _change(s: pd.Series, kind: str, month_end: bool) -> pd.Series:
-    """Change vs the observation exactly 12 months earlier (date-based, so gaps never shift the comparison)."""
+    """Change vs the observation exactly 12 (3 for 'diff3') months earlier (date-based, so gaps never shift the comparison)."""
+    months = 3 if kind == "diff3" else 12
     prev = s.copy()
-    prev.index = prev.index + pd.DateOffset(months=12)
+    prev.index = prev.index + pd.DateOffset(months=months)
     if month_end:
         prev.index = prev.index + pd.offsets.MonthEnd(0)  # Feb-28 + 12 months must meet Feb-29
     aligned = prev.reindex(s.index)
@@ -33,7 +34,7 @@ def _change(s: pd.Series, kind: str, month_end: bool) -> pd.Series:
 
 def _levels(ind: Indicator | Series, raw: pd.Series) -> pd.Series:
     """Raw series re-dated to the month-end at which each value becomes usable."""
-    if ind.transform not in ("level", "ma_dev", "ma_diff", "yoy", "diff12"):
+    if ind.transform not in ("level", "ma_dev", "ma_diff", "yoy", "diff12", "diff3"):
         raise NotImplementedError(f"{ind.name}: transform {ind.transform!r}")
     if ind.freq == "daily":
         if ind.lag_days:  # observations count from their release date, not their reference date
@@ -44,7 +45,7 @@ def _levels(ind: Indicator | Series, raw: pd.Series) -> pd.Series:
         if ind.transform in ("ma_dev", "ma_diff"):  # trailing mean of month-end levels, including the current one: no lookahead
             m = s.rolling(ind.transform_window, min_periods=ind.transform_window).mean()
             s = s / m.where(m > 0) - 1 if ind.transform == "ma_dev" else s - m
-        elif ind.transform in ("yoy", "diff12"):
+        elif ind.transform in ("yoy", "diff12", "diff3"):
             s = _change(s, ind.transform, month_end=True)
         return s.set_axis(s.index + pd.offsets.MonthEnd(ind.lag_months)) if ind.lag_months else s
     if ind.freq in ("monthly", "quarterly"):
@@ -54,7 +55,7 @@ def _levels(ind: Indicator | Series, raw: pd.Series) -> pd.Series:
             raise ValueError(f"{ind.name}: {ind.freq} dates must be the 1st of the month")
         if ind.lag_months < 1:  # MonthEnd(0) from the 1st is the period's own month-end: usable before it is published
             raise ValueError(f"{ind.name}: {ind.freq} lag_months must be >= 1")
-        if ind.transform in ("yoy", "diff12"):
+        if ind.transform in ("yoy", "diff12", "diff3"):
             raw = _change(raw, ind.transform, month_end=False)  # on the observations, before they are re-dated
         return raw.set_axis(raw.index + pd.offsets.MonthEnd(ind.lag_months))
     raise NotImplementedError(f"{ind.name}: freq {ind.freq!r}")
@@ -66,6 +67,8 @@ def _fetch(ind: Indicator | Series, refresh: bool) -> pd.Series:
         return fetch_series(ident, refresh)
     if kind == "yahoo":
         return fetch_yahoo_daily(ident, refresh)
+    if kind == "cape" and ident == "multpl":
+        return fetch_cape(refresh)
     raise NotImplementedError(f"{ind.name}: source {ind.source!r}")
 
 

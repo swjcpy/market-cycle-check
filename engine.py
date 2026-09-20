@@ -1,8 +1,8 @@
 """Turn a cycle definition (cycles.py) into scores, using only data known at each month-end.
 
 Per indicator: month-end level -> percentile (expanding or rolling) -> score in [-2, +2]
-(+2 = the cycle is "hot": greed, cheap credit, easy money, strong growth; -2 = "cold"). Cycle score = equal-weight
-mean, NaN unless every indicator is present. Percentile scores are unitless: 0 = median of its own history.
+(+2 = the cycle is "hot": greed, cheap credit, easy money, strong growth; -2 = "cold"). Cycle score = weighted
+mean (redundancy-aware weights, see cycle_weights), NaN unless every indicator is present. Percentile scores are unitless: 0 = median of its own history.
 """
 import sys
 
@@ -76,6 +76,23 @@ PARTIAL_GAP_DAYS = 4  # a daily series ending more than this many days before mo
 STALE_DAYS = 10       # warn if the newest daily/weekly observation is older than this (weekly series are 5-12 days old)
 
 
+def cycle_weights(cycle: Cycle) -> dict[str, float]:
+    """Redundancy-aware weights (no outcome fitting): each independent underlying series ('family') gets an equal share,
+    and readings that share a family (e.g. three readings derived from the fed funds rate) split that one share."""
+    names = [i.name for i in cycle.indicators]
+    if len(set(names)) != len(names):
+        raise ValueError(f"{cycle.name}: duplicate indicator names")
+    for i in cycle.indicators:
+        if i.family and i.family in names:
+            raise ValueError(f"{cycle.name}: family {i.family!r} equals a reading's name")
+    fam = {i.name: i.family or i.name for i in cycle.indicators}
+    for f in {i.family for i in cycle.indicators if i.family}:
+        if sum(1 for v in fam.values() if v == f) < 2:
+            raise ValueError(f"{cycle.name}: family {f!r} has a single member")
+    counts = {f: sum(1 for v in fam.values() if v == f) for f in set(fam.values())}
+    return {n: 1 / len(counts) / counts[f] for n, f in fam.items()}
+
+
 def compute_cycle(name: str, refresh: bool = False, today: pd.Timestamp | None = None) -> pd.DataFrame:
     cycle: Cycle = CYCLES[name]
     today = pd.Timestamp.today().normalize() if today is None else today
@@ -105,7 +122,8 @@ def compute_cycle(name: str, refresh: bool = False, today: pd.Timestamp | None =
         scores[f"{i.name}_score"] = sc.ffill(limit=i.ffill_limit) if i.ffill_limit else sc
     out = out.join(scores)
     col = f"{name}_score"
-    out[col] = scores.mean(axis=1, skipna=False)
+    w = pd.Series(cycle_weights(cycle))
+    out[col] = (scores.rename(columns=lambda c: c[: -len("_score")]) * w).sum(axis=1, skipna=False)   # NaN unless every reading is present
     out[f"{col}_chg_6m"] = out[col].diff(6)
     try:  # NBER dating is hindsight-only, used for shading; undated recent months carry the last value forward
         rec = fetch_series(RECESSION_SERIES, refresh)

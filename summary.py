@@ -13,7 +13,7 @@ import pandas as pd
 import plain
 from cycles import CYCLES
 from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
-from engine import _fetch, compute_cycle
+from engine import _fetch, compute_cycle, cycle_weights
 
 HISTORY_FROM = "1995-01-01"
 HEADLINE_CYCLES = ("credit", "psychology")   # the risk-appetite headline; economy/policy/etc. are context (fixed in advance)
@@ -117,9 +117,21 @@ def _health(name: str) -> list[dict]:
     return rows
 
 
+def _round_to_100(pcts: dict) -> dict:
+    """Largest-remainder rounding so the displayed whole percents add up to exactly 100 (17+17+17+50 would show 101)."""
+    base = {k: int(v) for k, v in pcts.items()}
+    short = round(sum(pcts.values())) - sum(base.values())
+    for k in sorted(pcts, key=lambda k: pcts[k] - base[k], reverse=True)[:max(short, 0)]:
+        base[k] += 1
+    return base
+
+
 def _indicators(name: str, df: pd.DataFrame) -> list[dict]:
     out = []
+    weights = cycle_weights(CYCLES[name])
+    shown = _round_to_100({k: v * 100 for k, v in weights.items()})     # whole percents that add up to exactly 100
     for i in CYCLES[name].indicators:
+        mates = [plain.INDICATOR_INFO[o.name][0] for o in CYCLES[name].indicators if o.family and o.family == i.family and o.name != i.name]
         label, fmt, expl = plain.INDICATOR_INFO[i.name]
         lv, sc = df[i.name].dropna(), df[f"{i.name}_score"].dropna()
         value = None
@@ -130,7 +142,7 @@ def _indicators(name: str, df: pd.DataFrame) -> list[dict]:
             except (ValueError, TypeError):
                 value = f"{v:.2f}"
         s = float(sc.iloc[-1]) if len(sc) else None
-        out.append(dict(name=i.name, label=label, explain=expl, value=value, value_date=lv.index[-1].strftime("%Y-%m-%d") if len(lv) else None,
+        out.append(dict(name=i.name, label=label, explain=expl, weight=shown[i.name], shares_with=mates, value=value, value_date=lv.index[-1].strftime("%Y-%m-%d") if len(lv) else None,
                         score=_clean(s), band=band(s) if s is not None else None,
                         hotter_than=None if s is None else round((s + 2) / 4 * 100)))
     return out

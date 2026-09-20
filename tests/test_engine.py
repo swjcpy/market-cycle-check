@@ -1084,3 +1084,62 @@ def test_cape_consistency_checks_hold_at_any_cache_age(tmp_path, monkeypatch):
     with mock.patch("data.requests.get", return_value=FakeResp(shifted)):
         assert data.fetch_cape(refresh=True).iloc[-1] == 40.0                                 # history does not match the cache
     assert "does not match" in status.read_text() or "inconsistent" in status.read_text()
+
+
+# ---- redundancy-aware weights -------------------------------------------------------------------------------------
+from engine import cycle_weights  # noqa: E402
+
+
+def test_weights_sum_to_one_and_split_families_in_every_cycle():
+    for name, cyc in CYCLES.items():
+        w = cycle_weights(cyc)
+        assert sum(w.values()) == pytest.approx(1.0) and all(v > 0 for v in w.values()), name
+        for fam in {i.family for i in cyc.indicators if i.family}:
+            members = [i.name for i in cyc.indicators if i.family == fam]
+            assert len(members) >= 2 and len({round(w[m], 12) for m in members}) == 1, (name, fam)     # a family is never a lone reading
+
+
+def test_pinned_family_assignments_and_weights():
+    got = {n: {i.name: i.family for i in c.indicators if i.family} for n, c in CYCLES.items()}
+    assert got["psychology"] == {"sp500_vs_10y_trend": "stock_prices", "cape": "stock_prices"}
+    assert got["policy"] == {"real_policy_rate": "fed_funds", "policy_rate_12m_change": "fed_funds", "policy_rate_3m_change": "fed_funds"}
+    assert got["profits"] == {"profit_share_of_gdp": "corporate_profits", "profit_growth_yoy": "corporate_profits"}
+    assert got["realestate"] == {"price_to_rent": "case_shiller", "house_price_yoy": "case_shiller"}
+    assert got["bonds"] == {"yield_vs_10y_average": "ten_year_yield", "yield_12m_change": "ten_year_yield"}
+    assert got["credit"] == got["economy"] == got["distressed"] == {}
+    w = cycle_weights(CYCLES["policy"])
+    assert w["curve_10y_minus_3m"] == pytest.approx(0.5) and w["policy_rate_3m_change"] == pytest.approx(1 / 6)
+    w = cycle_weights(CYCLES["psychology"])
+    assert w["vix"] == pytest.approx(1 / 3) and w["consumer_sentiment"] == pytest.approx(1 / 3) and w["cape"] == pytest.approx(1 / 6)
+    w = cycle_weights(CYCLES["bonds"])
+    assert w["term_premium"] == pytest.approx(0.5) and w["yield_12m_change"] == pytest.approx(0.25)
+
+
+def test_synthetic_cycle_score_is_the_weighted_mean_of_indicator_scores(synth, monkeypatch):
+    cyc = Cycle("w", (Indicator("a", "fred:D", "daily", -1, 24, family="f"), Indicator("b", "fred:D", "daily", 1, 24, family="f"),
+                      Indicator("c", "fred:Q", "quarterly", -1, 8, lag_months=2, ffill_limit=4)))
+    monkeypatch.setitem(CYCLES, "w", cyc)
+    out = engine.compute_cycle("w", today=TODAY)
+    expected = 0.25 * out["a_score"] + 0.25 * out["b_score"] + 0.5 * out["c_score"]                  # family f shares half the weight
+    assert np.allclose(out["w_score"].dropna(), expected.dropna()) and out["w_score"].notna().sum() > 100
+    first_c = out["c_score"].first_valid_index()
+    assert out["w_score"].loc[:first_c - pd.Timedelta(days=1)].isna().all()                          # still NaN unless every reading exists
+
+
+def test_family_members_move_the_composite_less_than_an_independent_reading(synth, monkeypatch):
+    fam = Cycle("w2", (Indicator("a", "fred:D", "daily", -1, 24, family="f"), Indicator("b", "fred:D", "daily", 1, 24, family="f"),
+                       Indicator("c", "fred:Q", "quarterly", -1, 8, lag_months=2, ffill_limit=4)))
+    monkeypatch.setitem(CYCLES, "w2", fam)
+    w = cycle_weights(fam)
+    assert w["a"] == w["b"] == 0.25 and w["c"] == 0.5 and w["a"] < w["c"]
+
+
+def test_cycle_weights_rejects_ambiguous_definitions():
+    a, b = Indicator("a", "fred:D", "daily", 1, 5, family="f"), Indicator("b", "fred:D", "daily", 1, 5, family="f")
+    with pytest.raises(ValueError):
+        cycle_weights(Cycle("x", (Indicator("c", "fred:D", "daily", 1, 5), Indicator("c", "fred:D", "daily", 1, 5))))   # duplicate names
+    with pytest.raises(ValueError):
+        cycle_weights(Cycle("x", (a, Indicator("f", "fred:D", "daily", 1, 5))))       # a family named like a reading
+    with pytest.raises(ValueError):
+        cycle_weights(Cycle("x", (a, Indicator("c", "fred:D", "daily", 1, 5))))       # a family with one member
+    assert cycle_weights(Cycle("x", (a, b, Indicator("c", "fred:D", "daily", 1, 5)))) == {"a": 0.25, "b": 0.25, "c": 0.5}

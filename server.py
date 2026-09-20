@@ -133,6 +133,17 @@ def data_line(c: dict) -> str:
     return f"Underlying data covers up to {esc(newest)}; the slowest-updating input covers up to {esc(oldest)}."
 
 
+def weight_text(i: dict) -> str:
+    """How much this reading counts. Readings built from the same underlying data share one vote."""
+    if i.get("weight") is None:
+        return ""
+    txt = "counts for %d%% of this gauge" % i["weight"]
+    mates = i.get("shares_with") or []
+    if mates:
+        txt += "; shares one vote with " + ", ".join(esc(str(m)) for m in mates) + " because they come from the same data"
+    return txt
+
+
 def hotter_text(i: dict) -> str:
     return "" if i["hotter_than"] is None else "warmer than %d%% of past months" % i["hotter_than"]
 
@@ -154,7 +165,7 @@ def render_card(c: dict) -> str:
         f'<tr><td><b>{esc(i["label"])}</b><br><span class="sub">{esc(i["explain"])}</span></td>'
         f'<td class="num">{esc(i["value"] or "–")}</td>'
         f'<td class="num">{"–" if i["score"] is None else pill(i["band"], i["band"].capitalize())}<br><span class="sub">'
-        + hotter_text(i) + '</span></td></tr>' for i in c["indicators"])
+        + hotter_text(i) + '<br>' + weight_text(i) + '</span></td></tr>' for i in c["indicators"])
     you = f'<h4>What this could mean for you</h4><p>{esc(c["you"])}</p>' if c["you"] else ""
     partial = "" if not c["is_partial"] else ' <span class="sub">(latest month still in progress)</span>'
     return f'''<article class="card" id="{c["key"]}">
@@ -272,6 +283,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
   <ul><li>Every gauge is scored from <b>−2 (cold)</b> to <b>+2 (hot)</b> by comparing today's readings with that gauge's own history (from the 1980s or 1990s onward, depending on the data). 0 is its usual level.</li>
   <li>Plain-English key: a <b>yield</b> is the interest rate a bond pays; a <b>spread</b> is the extra interest over the government's rate; an <b>inverted</b> curve means short-term rates are above long-term ones.</li>
   <li><b>Hot</b> means optimism, easy money or a booming economy. <b>Cold</b> means fear, tight money or weakness. Neither is good or bad on its own; extremes tend to reverse, but nobody knows when.</li>
+  <li>Each gauge averages its readings. Readings built from the very same data series (for example three readings built from the central bank's interest rate) share one vote between them. Some other readings still overlap partly, and the weights are a simple rule, not a measured optimum.</li>
   <li>The arrow shows whether the gauge has been rising or falling over six months. <b>Direction matters as much as level.</b></li>
   <li>Distressed debt and interest rates use their own definitions of hot and cold; each card explains.</li></ul></section>
 <section class="card"><details><summary><h3>Data health</h3></summary><table class="ind"><thead><tr><th>Source</th><th>Latest reading</th><th class="num">Days old</th><th></th></tr></thead><tbody>{health}</tbody></table>

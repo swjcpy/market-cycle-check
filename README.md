@@ -12,6 +12,8 @@ or `http://localhost:8788` on the machine running it.
 
 ## Quick start
 
+The analysis venv needs a recent Python (developed on 3.14); `server.py` alone only needs Python 3.9+.
+
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python summary.py --write --refresh     # downloads public FRED/Yahoo data into data/ (no API keys needed)
@@ -33,6 +35,17 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
 - `server.py` (stdlib only, run by the system `/usr/bin/python3` so it is already allowed through the macOS firewall)
   serves the page and re-runs the build in the project venv every 6 hours.
 - `validate.py <cycle>` tests a cycle against forward S&P 500 returns (`data/validation_<cycle>.txt`).
+
+## Weights
+
+A gauge is the weighted average of its readings. Weights follow a simple, transparent rule that does not look at market
+returns: each independent underlying data series gets an equal share, and readings built from the same series (for example
+three readings derived from the fed funds rate) split one share (`Indicator.family`, `engine.cycle_weights`). This is provenance,
+not a measured optimum: some readings still overlap partly (e.g. the term premium and the 10-year yield).
+
+Changelog: on 20 Sep 2026 this rule replaced equal weights. It moved Investor mood from Warm (+0.50) to Normal (+0.12) and Bonds
+from Cold to Cool because of the weighting method (consumer sentiment, stuck at Cold since 2022, now counts for a third), not
+because the market moved.
 
 ## Honest limits
 

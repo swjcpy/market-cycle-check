@@ -38,6 +38,8 @@ class Indicator:
     lag_days: int = 0           # daily only: days between an observation's date and its release (weekly claims: 5)
     other: "Series | None" = None  # optional second input, combined with the first after both are usable
     combine: str | None = None     # "minus" (this - other) | "ratio" (this / other); requires `other`
+    family: str | None = None   # readings that come from the SAME underlying series share a family and split ONE weight
+                                # between them (None = the reading is its own family). See engine.cycle_weights().
 
 
 @dataclass(frozen=True)
@@ -61,12 +63,12 @@ CYCLES = {
         Indicator("vix", "fred:VIXCLS", "daily", sign=-1, min_history=60),
         # price-only valuation: how far the S&P 500 sits above its 10-year average
         Indicator("sp500_vs_10y_trend", "yahoo:^GSPC", "daily", sign=1, min_history=60,
-                  transform="ma_dev", transform_window=120),
+                  transform="ma_dev", transform_window=120, family="stock_prices"),
         # Shiller CAPE: the S&P 500's price divided by the average of the last 10 years of inflation-adjusted earnings. High = expensive.
         # Values are dated the 1st (history) plus the latest day; multpl.com republishes Shiller's series (checked against his workbook).
         # Scored against the last 30 years (360 months) only: valuation levels drift up over the decades, so against all history since
         # 1871 it would read "extremely expensive" almost every month since the 1990s and add nothing.
-        Indicator("cape", "cape:multpl", "daily", sign=1, min_history=60, window=360),
+        Indicator("cape", "cape:multpl", "daily", sign=1, min_history=60, window=360, family="stock_prices"),
         # Michigan survey (dated the 1st, revised, weak contrarian signal: low confidence). Used from the end of the next month.
         Indicator("consumer_sentiment", "fred:UMCSENT", "monthly", sign=1, min_history=60,
                   lag_months=2, ffill_limit=2),
@@ -75,12 +77,12 @@ CYCLES = {
         # The central bank's interest rate minus TRAILING core inflation, in percentage points (backward-looking, so it reads
         # very "easy" in 2021-22 even as rates rose; PCE is also revised after release, and FRED gives only the latest vintage).
         # Inflation for month M is usable from the end of M+2 (published about the end of M+1; one extra month for safety).
-        Indicator("real_policy_rate", "fred:DFF", "daily", sign=-1, min_history=60, ffill_limit=3,
+        Indicator("real_policy_rate", "fred:DFF", "daily", sign=-1, min_history=60, ffill_limit=3, family="fed_funds",
                   other=Series("fred:PCEPILFE", "monthly", lag_months=3, transform="yoy"), combine="minus"),
         # is the central bank tightening or easing? rising rates = tightening (falling rates are usually a sign of trouble)
-        Indicator("policy_rate_12m_change", "fred:DFF", "daily", sign=-1, min_history=60, transform="diff12"),
+        Indicator("policy_rate_12m_change", "fred:DFF", "daily", sign=-1, min_history=60, transform="diff12", family="fed_funds"),
         # the same, over 3 months: a fresh hike or cut shows up quickly instead of waiting for the 12-month window
-        Indicator("policy_rate_3m_change", "fred:DFF", "daily", sign=-1, min_history=60, transform="diff3"),
+        Indicator("policy_rate_3m_change", "fred:DFF", "daily", sign=-1, min_history=60, transform="diff3", family="fed_funds"),
         # steep curve = easy conditions; inverted = tight
         Indicator("curve_10y_minus_3m", "fred:T10Y3M", "daily", sign=1, min_history=60),
     )),
@@ -98,11 +100,11 @@ CYCLES = {
     "profits": Cycle("profits", (
         # after-tax corporate profits as a share of the whole economy (GDP): high = companies keep an unusually large slice.
         # BEA publishes a quarter's profits ~2 months after it ends and revises them; usable here from the end of month 6.
-        Indicator("profit_share_of_gdp", "fred:CP", "quarterly", sign=1, min_history=20, lag_months=6, ffill_limit=4,
+        Indicator("profit_share_of_gdp", "fred:CP", "quarterly", sign=1, min_history=20, lag_months=6, ffill_limit=4, family="corporate_profits",
                   other=Series("fred:GDP", "quarterly", lag_months=6), combine="ratio"),
         # after-tax profits versus a year earlier, in percent: strongly rising = hot
         Indicator("profit_growth_yoy", "fred:CP", "quarterly", sign=1, min_history=20, lag_months=6, ffill_limit=4,
-                  transform="yoy"),
+                  transform="yoy", family="corporate_profits"),
     )),
     "realestate": Cycle("realestate", (
         # 30-year mortgage rate minus the 10-year Treasury yield, in percentage points (weekly/daily): wide = lenders are nervous
@@ -110,11 +112,11 @@ CYCLES = {
                   other=Series("fred:DGS10", "daily"), combine="minus"),
         # home prices relative to rents (Case-Shiller index / CPI rent index): high = homes expensive versus renting.
         # Home prices are published ~2 months late; usable from the end of the 3rd month after the reading month.
-        Indicator("price_to_rent", "fred:CSUSHPINSA", "monthly", sign=1, min_history=60, lag_months=4, ffill_limit=2,
+        Indicator("price_to_rent", "fred:CSUSHPINSA", "monthly", sign=1, min_history=60, lag_months=4, ffill_limit=2, family="case_shiller",
                   other=Series("fred:CUSR0000SEHA", "monthly", lag_months=4), combine="ratio"),
         # home prices versus a year ago, in percent: booming = hot
         Indicator("house_price_yoy", "fred:CSUSHPINSA", "monthly", sign=1, min_history=60, lag_months=4, ffill_limit=2,
-                  transform="yoy"),
+                  transform="yoy", family="case_shiller"),
         # new home building permits versus a year ago, in percent: builders piling in = hot
         Indicator("building_permits_yoy", "fred:PERMIT", "monthly", sign=1, min_history=60, lag_months=2, ffill_limit=2,
                   transform="yoy"),
@@ -126,9 +128,9 @@ CYCLES = {
         Indicator("term_premium", "fred:THREEFYTP10", "daily", sign=-1, min_history=60),
         # 10-year Treasury yield minus its own 10-year average, in percentage points: high = bonds cheap (cold), low = hot
         Indicator("yield_vs_10y_average", "fred:DGS10", "daily", sign=-1, min_history=60,
-                  transform="ma_diff", transform_window=120),
+                  transform="ma_diff", transform_window=120, family="ten_year_yield"),
         # change in the 10-year yield over a year, in percentage points: falling yields = bond rally = hot
-        Indicator("yield_12m_change", "fred:DGS10", "daily", sign=-1, min_history=60, transform="diff12"),
+        Indicator("yield_12m_change", "fred:DGS10", "daily", sign=-1, min_history=60, transform="diff12", family="ten_year_yield"),
     )),
     "distressed": Cycle("distressed", (
         # A PROXY: true distressed-debt data (default rates, share of bonds trading at distressed prices) is paid data.

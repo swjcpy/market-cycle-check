@@ -840,3 +840,29 @@ def test_rate_notice_threshold_survives_float_noise(monkeypatch):
     monkeypatch.setattr(summary, "fetch_series", lambda sid: _dff([3.06] * 60 + [3.26]))
     n = summary._rate_notice(pd.Timestamp("2026-09-19"))
     assert n is not None and n["change"] == 0.2                                    # ...but it is exactly a 0.20 move: fires
+
+
+def test_indicator_weights_and_shared_vote_text(monkeypatch):
+    frames = {k: _fake_frame(k, 0.0) for k in CYCLES}
+    monkeypatch.setattr(summary, "compute_cycle", lambda n, r=False, t=None: frames[n])
+    monkeypatch.setattr(summary, "track_record", lambda s, c: None); monkeypatch.setattr(summary, "_health", lambda n: [])
+    out = summary.build(record_events=False)
+    by = {c["key"]: {i["name"]: i for i in c["indicators"]} for c in out["cycles"]}
+    for key, inds in by.items():
+        assert sum(i["weight"] for i in inds.values()) == 100, key                                 # displayed percents add up exactly
+    assert by["psychology"]["vix"]["shares_with"] == [] and by["credit"]["baa_10y_spread"]["shares_with"] == []   # no family, no shared vote
+    assert sorted(i["weight"] for i in by["policy"].values()) == [16, 17, 17, 50]
+    assert by["policy"]["curve_10y_minus_3m"]["weight"] == 50 and by["policy"]["curve_10y_minus_3m"]["shares_with"] == []
+    r = by["policy"]["real_policy_rate"]
+    assert r["weight"] == 17 and sorted(r["shares_with"]) == sorted([plain.INDICATOR_INFO["policy_rate_12m_change"][0], plain.INDICATOR_INFO["policy_rate_3m_change"][0]])
+    page = server.render(json.loads(json.dumps(out, default=str)), "now", None)
+    assert "counts for 50% of this gauge" in page and "shares one vote with" in page and "share one vote" in page
+    assert server.weight_text({}) == "" and "counts for 17%" in server.weight_text(dict(weight=17, shares_with=[]))
+    assert "&lt;b&gt;" in server.weight_text(dict(weight=17, shares_with=["<b>"])) and "<b>" not in server.weight_text(dict(weight=17, shares_with=["<b>"]))
+
+
+def test_round_to_100_and_page_text_is_honest_about_limits():
+    assert sum(summary._round_to_100({"a": 100 / 6, "b": 100 / 6, "c": 100 / 6, "d": 50}).values()) == 100
+    assert summary._round_to_100({"a": 50.0, "b": 50.0}) == {"a": 50, "b": 50}
+    page = server.render(real_summary(), "now", None)
+    assert "not a measured optimum" in page and "Some other readings still overlap partly" in page and "not counted several times" not in page

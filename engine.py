@@ -78,7 +78,8 @@ STALE_DAYS = 10       # warn if the newest daily/weekly observation is older tha
 
 def cycle_weights(cycle: Cycle) -> dict[str, float]:
     """Redundancy-aware weights (no outcome fitting): each independent underlying series ('family') gets an equal share,
-    and readings that share a family (e.g. three readings derived from the fed funds rate) split that one share."""
+    and readings that share a family (e.g. three readings derived from the fed funds rate) split that one share. A reading with
+    confidence < 1 (a stated data-quality judgement) counts proportionally less; the weights are then renormalised to sum to 1."""
     names = [i.name for i in cycle.indicators]
     if len(set(names)) != len(names):
         raise ValueError(f"{cycle.name}: duplicate indicator names")
@@ -90,7 +91,12 @@ def cycle_weights(cycle: Cycle) -> dict[str, float]:
         if sum(1 for v in fam.values() if v == f) < 2:
             raise ValueError(f"{cycle.name}: family {f!r} has a single member")
     counts = {f: sum(1 for v in fam.values() if v == f) for f in set(fam.values())}
-    return {n: 1 / len(counts) / counts[f] for n, f in fam.items()}
+    for i in cycle.indicators:
+        if not 0 < i.confidence <= 1:
+            raise ValueError(f"{cycle.name}: confidence of {i.name} must be in (0, 1]")
+    raw = {i.name: 1 / len(counts) / counts[fam[i.name]] * i.confidence for i in cycle.indicators}
+    total = sum(raw.values())
+    return {n: v / total for n, v in raw.items()}
 
 
 def compute_cycle(name: str, refresh: bool = False, today: pd.Timestamp | None = None) -> pd.DataFrame:

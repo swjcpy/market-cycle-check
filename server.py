@@ -141,6 +141,8 @@ def weight_text(i: dict) -> str:
     mates = i.get("shares_with") or []
     if mates:
         txt += "; shares one vote with " + ", ".join(esc(str(m)) for m in mates) + " because they come from the same data"
+    if i.get("low_confidence"):
+        txt += ". " + esc(str(i["low_confidence"]))
     return txt
 
 

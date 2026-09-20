@@ -40,6 +40,8 @@ class Indicator:
     combine: str | None = None     # "minus" (this - other) | "ratio" (this / other); requires `other`
     family: str | None = None   # readings that come from the SAME underlying series share a family and split ONE weight
                                 # between them (None = the reading is its own family). See engine.cycle_weights().
+    confidence: float = 1.0     # 0 < c <= 1: a data-quality judgement that scales this reading's weight (weights are then
+                                # renormalised). Every value below 1 needs a reason in plain.CONFIDENCE_NOTE.
 
 
 @dataclass(frozen=True)
@@ -70,8 +72,10 @@ CYCLES = {
         # 1871 it would read "extremely expensive" almost every month since the 1990s and add nothing.
         Indicator("cape", "cape:multpl", "daily", sign=1, min_history=60, window=360, family="stock_prices"),
         # Michigan survey (dated the 1st, revised, weak contrarian signal: low confidence). Used from the end of the next month.
+        # confidence 0.5: it measures households (mostly worried about prices), not investors; the survey moved from phone to online
+        # in 2024 (readings ~9 points lower, so not comparable with earlier history); and it sits at record lows, saturating its score.
         Indicator("consumer_sentiment", "fred:UMCSENT", "monthly", sign=1, min_history=60,
-                  lag_months=2, ffill_limit=2),
+                  lag_months=2, ffill_limit=2, confidence=0.5),
     )),
     "policy": Cycle("policy", (
         # The central bank's interest rate minus TRAILING core inflation, in percentage points (backward-looking, so it reads
@@ -100,7 +104,10 @@ CYCLES = {
     "profits": Cycle("profits", (
         # after-tax corporate profits as a share of the whole economy (GDP): high = companies keep an unusually large slice.
         # BEA publishes a quarter's profits ~2 months after it ends and revises them; usable here from the end of month 6.
+        # confidence 0.5: the share has stepped up since ~2005 (5-7% -> 10-13%), so against its full history it sits at the maximum
+        # almost every quarter (a structural shift, not a cycle) and it would otherwise carry half of this gauge.
         Indicator("profit_share_of_gdp", "fred:CP", "quarterly", sign=1, min_history=20, lag_months=6, ffill_limit=4, family="corporate_profits",
+                  confidence=0.5,
                   other=Series("fred:GDP", "quarterly", lag_months=6), combine="ratio"),
         # after-tax profits versus a year earlier, in percent: strongly rising = hot
         Indicator("profit_growth_yoy", "fred:CP", "quarterly", sign=1, min_history=20, lag_months=6, ffill_limit=4,

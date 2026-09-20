@@ -142,7 +142,7 @@ def _indicators(name: str, df: pd.DataFrame) -> list[dict]:
             except (ValueError, TypeError):
                 value = f"{v:.2f}"
         s = float(sc.iloc[-1]) if len(sc) else None
-        out.append(dict(name=i.name, label=label, explain=expl, weight=shown[i.name], shares_with=mates, value=value, value_date=lv.index[-1].strftime("%Y-%m-%d") if len(lv) else None,
+        out.append(dict(name=i.name, label=label, explain=expl, weight=shown[i.name], shares_with=mates, low_confidence=plain.CONFIDENCE_NOTE.get(i.name) if i.confidence < 1 else None, value=value, value_date=lv.index[-1].strftime("%Y-%m-%d") if len(lv) else None,
                         score=_clean(s), band=band(s) if s is not None else None,
                         hotter_than=None if s is None else round((s + 2) / 4 * 100)))
     return out

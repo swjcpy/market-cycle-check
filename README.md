@@ -43,9 +43,19 @@ returns: each independent underlying data series gets an equal share, and readin
 three readings derived from the fed funds rate) split one share (`Indicator.family`, `engine.cycle_weights`). This is provenance,
 not a measured optimum: some readings still overlap partly (e.g. the term premium and the 10-year yield).
 
+Judgement calls (each pinned in a test and explained next to the reading on the page; both use `Indicator.confidence = 0.5`):
+(1) consumer sentiment counts at half weight. It measures households' worries about prices more than investors' appetite for risk,
+the University of Michigan moved from phone to online interviews in 2024 (recent readings are not comparable with earlier
+ones), and it sits at a record low, which saturates its score. Depending on its weight the investor-mood reading ranged from
+Normal (weight 1/3) to Hot (weight 0), and no return test could tell those apart, so this is a data-quality judgement, not a fit.
+The value 0.5 is not precise: the Warm band holds for any confidence from about 0.1 to 0.7, and it was chosen after seeing how the
+reading moves. It applies to all history, although the problems are recent (a limitation).
+(2) The profit share of GDP also counts at half weight: it stepped up around 2005 (5-7% to 10-13%), so against its full history it
+sits at its maximum nearly every quarter and would otherwise carry half of the profits gauge.
+
 Changelog: on 20 Sep 2026 this rule replaced equal weights. It moved Investor mood from Warm (+0.50) to Normal (+0.12) and Bonds
-from Cold to Cool because of the weighting method (consumer sentiment, stuck at Cold since 2022, now counts for a third), not
-because the market moved.
+from Cold to Cool because of the weighting method (consumer sentiment, stuck at Cold since 2022, then counted for a third), not
+because the market moved. The same day the sentiment judgement above set its weight to a fifth, giving Investor mood +0.53 (Warm).
 
 ## Honest limits
 

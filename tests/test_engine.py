@@ -650,7 +650,7 @@ def test_real_profits_regime_anchors():
     """Sign/scale sanity anchors chosen WITH hindsight; they catch flipped signs, not accuracy."""
     d = engine.compute_cycle("profits")
     assert d.loc["2000-12-31", "profits_score"] <= -0.5 and d.loc["2000-12-31", "profit_growth_yoy_score"] <= -0.5   # profit recession
-    assert d.loc["2006-12-31", "profits_score"] >= 1.0 and d.loc["2012-12-31", "profits_score"] >= 1.0               # boom
+    assert d.loc["2006-12-31", "profits_score"] >= 0.75 and d.loc["2012-12-31", "profits_score"] >= 1.0               # boom (2006: 0.90 after the profit-share confidence, was 1.17)
     assert d.loc["2009-06-30", "profit_growth_yoy_score"] <= -1.0
 
 
@@ -1095,8 +1095,8 @@ def test_weights_sum_to_one_and_split_families_in_every_cycle():
         w = cycle_weights(cyc)
         assert sum(w.values()) == pytest.approx(1.0) and all(v > 0 for v in w.values()), name
         for fam in {i.family for i in cyc.indicators if i.family}:
-            members = [i.name for i in cyc.indicators if i.family == fam]
-            assert len(members) >= 2 and len({round(w[m], 12) for m in members}) == 1, (name, fam)     # a family is never a lone reading
+            members = [i for i in cyc.indicators if i.family == fam]
+            assert len(members) >= 2 and len({round(w[m.name] / m.confidence, 12) for m in members}) == 1, (name, fam)   # equal shares, scaled by confidence
 
 
 def test_pinned_family_assignments_and_weights():
@@ -1110,7 +1110,7 @@ def test_pinned_family_assignments_and_weights():
     w = cycle_weights(CYCLES["policy"])
     assert w["curve_10y_minus_3m"] == pytest.approx(0.5) and w["policy_rate_3m_change"] == pytest.approx(1 / 6)
     w = cycle_weights(CYCLES["psychology"])
-    assert w["vix"] == pytest.approx(1 / 3) and w["consumer_sentiment"] == pytest.approx(1 / 3) and w["cape"] == pytest.approx(1 / 6)
+    assert w["vix"] == pytest.approx(0.4) and w["consumer_sentiment"] == pytest.approx(0.2) and w["cape"] == pytest.approx(0.2) and w["sp500_vs_10y_trend"] == pytest.approx(0.2)
     w = cycle_weights(CYCLES["bonds"])
     assert w["term_premium"] == pytest.approx(0.5) and w["yield_12m_change"] == pytest.approx(0.25)
 
@@ -1143,3 +1143,23 @@ def test_cycle_weights_rejects_ambiguous_definitions():
     with pytest.raises(ValueError):
         cycle_weights(Cycle("x", (a, Indicator("c", "fred:D", "daily", 1, 5))))       # a family with one member
     assert cycle_weights(Cycle("x", (a, b, Indicator("c", "fred:D", "daily", 1, 5)))) == {"a": 0.25, "b": 0.25, "c": 0.5}
+
+
+def test_confidence_scales_a_weight_and_weights_are_renormalised():
+    a, b = Indicator("a", "fred:D", "daily", 1, 5), Indicator("b", "fred:D", "daily", 1, 5)
+    c = Indicator("c", "fred:D", "daily", 1, 5, confidence=0.5)
+    w = cycle_weights(Cycle("x", (a, b, c)))
+    assert w == pytest.approx({"a": 0.4, "b": 0.4, "c": 0.2}) and sum(w.values()) == pytest.approx(1.0)      # (1/3, 1/3, 1/6) / (5/6)
+    fam = cycle_weights(Cycle("x", (Indicator("p", "fred:D", "daily", 1, 5, family="f", confidence=0.5), Indicator("q", "fred:D", "daily", 1, 5, family="f"),
+                                    Indicator("r", "fred:D", "daily", 1, 5))))
+    assert fam == pytest.approx({"p": 1 / 7, "q": 2 / 7, "r": 4 / 7})                                       # raw .125/.25/.5, total .875
+    for bad in (0.0, -0.5, 1.5):
+        with pytest.raises(ValueError):
+            cycle_weights(Cycle("x", (a, Indicator("d", "fred:D", "daily", 1, 5, confidence=bad))))
+
+
+def test_every_reduced_confidence_is_pinned_and_explained():
+    import plain
+    reduced = {i.name: i.confidence for c in CYCLES.values() for i in c.indicators if i.confidence < 1}
+    assert reduced == {"consumer_sentiment": 0.5, "profit_share_of_gdp": 0.5}                # any change here is a deliberate, reviewed decision
+    assert set(reduced) == set(plain.CONFIDENCE_NOTE) and all(len(t) > 60 for t in plain.CONFIDENCE_NOTE.values())

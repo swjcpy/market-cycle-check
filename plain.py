@@ -182,6 +182,14 @@ STAGE_MILD_TEXT = {
     ("cold", "up"): "Somewhat cautious, but improving.", ("cold", "steady"): "Somewhat cautious, not changing much.", ("cold", "down"): "Getting more cautious.",
 }
 
+# A reading counted at less than full strength must say why (shown next to it on the page)
+CONFIDENCE_NOTE = {
+    "consumer_sentiment": "Counted at half of its normal weight: this survey measures households' worries about prices more than investors' appetite for risk, "
+                          "it changed from phone to online interviews in 2024 (so recent readings are not comparable with older ones), and it is near its lowest level on record.",
+    "profit_share_of_gdp": "Counted at half of its normal weight: company profits have taken a much bigger share of the economy since about 2005, so this reading "
+                           "sits at its maximum almost all the time and says little about where we are in the cycle.",
+}
+
 NOT_A_SIGNAL = "This is general education, not a buy or sell signal and not personal advice."
 
 DISCLAIMER = ("This page is general education, not personal financial advice. It measures the mood and conditions of the "

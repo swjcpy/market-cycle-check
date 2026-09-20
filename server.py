@@ -230,10 +230,11 @@ def render_card(c: dict, market: dict | None = None) -> str:
     lean = "Leaning that way, though not extreme. " if c["band"] in ("warm", "cool") else ""
     mean = lean + c["hot"] if c["band"] in ("hot", "warm") else lean + c["cold"] if c["band"] in ("cool", "cold") else "In its normal range: no strong message either way."
     rows = "".join(
-        f'<tr><td><b>{esc(i["label"])}</b><br><span class="sub">{esc(i["explain"])}</span></td>'
+        f'<tr><td><b>{esc(i["label"])}</b><br><span class="sub">{esc(i["explain"])}</span>'
+        f'<br><span class="sub weight">{weight_text(i)}</span></td>'
         f'<td class="num">{esc(i["value"] or "–")}</td>'
         f'<td class="num">{"–" if i["score"] is None else pill(i["band"], i["band"].capitalize())}<br><span class="sub">'
-        + hotter_text(i) + '<br>' + weight_text(i) + '</span></td></tr>' for i in c["indicators"])
+        + hotter_text(i) + '</span></td></tr>' for i in c["indicators"])
     you = f'<h4>What this could mean for you</h4><p>{esc(c["you"])}</p>' if c["you"] else ""
     partial = "" if not c["is_partial"] else ' <span class="sub">(latest month still in progress)</span>'
     return f'''<article class="card" id="{c["key"]}">
@@ -374,7 +375,7 @@ h1{margin:0;font-size:1.5rem}h2{font-size:1.5rem;line-height:1.25;margin:.3rem 0
 .cols{display:grid;grid-template-columns:1fr;gap:0 24px}@media(min-width:720px){.cols{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr 1fr}}
 ul{margin:.3rem 0 .6rem;padding-left:1.2rem}li{margin:.25rem 0}
 .pill{display:inline-block;padding:3px 11px;border-radius:999px;border:1.5px solid var(--c,var(--bd));background:color-mix(in srgb,var(--c,var(--bd)) 16%,transparent);font-size:.85rem;font-weight:600;white-space:nowrap}
-.stage{font-size:.92rem;color:var(--ink2)}.drivers{margin:.4rem 0}
+.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.drivers{margin:.4rem 0}
 .thermo{position:relative;height:12px;border-radius:8px;margin:12px 0 4px;background:linear-gradient(90deg,var(--cold),var(--cool) 30%,var(--normal) 50%,var(--warm) 70%,var(--hot))}
 .thermo.big{height:18px;border-radius:10px}.marker{position:absolute;top:-5px;width:6px;height:calc(100% + 10px);background:var(--ink);border:2px solid var(--surface);border-radius:4px;transform:translateX(-50%)}
 .thermo-lab{display:flex;justify-content:space-between;font-size:.72rem;color:var(--ink2)}

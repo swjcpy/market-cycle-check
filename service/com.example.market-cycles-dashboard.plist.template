@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Copy to ~/Library/LaunchAgents/com.example.market-cycles-dashboard.plist, replace /PATH/TO, then:
+     launchctl load ~/Library/LaunchAgents/com.example.market-cycles-dashboard.plist
+     /usr/bin/python3 is used because it is normally already allowed through the macOS firewall; server.py is stdlib-only. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.market-cycles-dashboard</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-u</string>
+        <string>/PATH/TO/market_cycles/server.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/PATH/TO/market_cycles</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>/PATH/TO/market_cycles/logs/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/PATH/TO/market_cycles/logs/launchd.log</string>
+</dict>
+</plist>

@@ -110,7 +110,33 @@ def _view_scale(key: str, vals: list) -> tuple:
     return lo, hi, (lambda v: v), [(t, _pct(t)) for t in ticks if lo < t < hi]
 
 
-def svg_history(hist: list, recessions: list, uid: str, market: dict | None = None, w: int = 640, h: int = 220) -> str:
+def _turn_markers(turns, hist: list, X, Y, pad_t: int, pad_b: int, h: int) -> str:
+    """Dotted lines at the S&P 500's high and low around each big fall, and hollow circles where this gauge topped out or bottomed
+    out nearby. Drawn with the market layer (hidden with it)."""
+    if not isinstance(turns, list):
+        return ""
+    by_month = {d[:7]: (d, v) for d, v in hist}
+    out = []
+    for t in turns:
+        try:
+            for key, glyph, y_txt in (("market_peak", "\u25bc S&P high", pad_t + 9), ("market_trough", "\u25b2 S&P low", h - pad_b - 4)):
+                d = str(t[key])[:10]
+                datetime.fromisoformat(d)
+                if hist[0][0] <= d <= hist[-1][0]:
+                    x = X(d)
+                    out.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{pad_t}" y2="{h - pad_b}" stroke="var(--ink2)" stroke-dasharray="1 3" opacity=".7"/>'
+                               f'<text x="{x + 3:.1f}" y="{y_txt}" class="axis tlabel">{glyph}</text>')
+            for kind in ("peak", "trough"):
+                g = t.get(kind)
+                if g and not g.get("at_edge") and str(g.get("date"))[:7] in by_month:
+                    d, v = by_month[str(g["date"])[:7]]
+                    out.append(f'<circle cx="{X(d):.1f}" cy="{Y(v):.1f}" r="5" fill="none" stroke="var(--line)" stroke-width="2"/>')
+        except (TypeError, ValueError, KeyError, AttributeError):
+            continue
+    return '<g class="mlayer mturn">' + "".join(out) + "</g>" if out else ""
+
+
+def svg_history(hist: list, recessions: list, uid: str, market: dict | None = None, turns: list | None = None, w: int = 640, h: int = 220) -> str:
     """Gauge history as inline SVG, with (optionally) the S&P 500 layered on as a thin grey line read on the RIGHT-hand scale.
     Three views of the stock market can be switched between (see MARKET_VIEWS). The two lines always use different scales, so
     where they cross means nothing; the legend and caption say so."""
@@ -153,6 +179,8 @@ def svg_history(hist: list, recessions: list, uid: str, market: dict | None = No
         parts.append(f'<polyline class="mline" points="{line}" fill="none" stroke="var(--ink2)" stroke-width="1.4" stroke-dasharray="6 3" stroke-linejoin="round" opacity=".9"/></g>')
     pts = " ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in hist)
     parts.append(f'<polyline points="{pts}" fill="none" stroke="var(--line)" stroke-width="2.4" stroke-linejoin="round"/>')
+    if views:
+        parts.append(_turn_markers(turns, hist, X, Y, pad_t, pad_b, h))
     lx, ly = X(hist[-1][0]), Y(hist[-1][1])
     parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="5" fill="var(--line)" stroke="var(--surface)" stroke-width="2"/>')
     mdot = '<circle class="mdot mlayer" style="display:none" r="3.5" fill="var(--ink2)" stroke="var(--surface)" stroke-width="1.5"/>' if views else ""
@@ -161,17 +189,19 @@ def svg_history(hist: list, recessions: list, uid: str, market: dict | None = No
     return "".join(parts)
 
 
-def chart_pair(hist: list, recessions: list, uid: str, market: dict | None) -> str:
+def chart_pair(hist: list, recessions: list, uid: str, market: dict | None, turns: list | None = None) -> str:
     """The gauge chart with, when price data exists, the S&P 500 layered on it, a view switch, a legend and an honest caption."""
     try:
-        chart = svg_history(hist, recessions, uid, market)
+        chart = svg_history(hist, recessions, uid, market, turns)
     except Exception:  # noqa: BLE001  the price layer is optional context: never let it take the chart (or page) down
         log.exception("price layer failed for %s", uid)
         chart = svg_history(hist, recessions, uid)
     present = [k for k in MARKET_VIEWS if f'mv-{k}"' in chart]
     if not present:
         return chart
-    legend = "".join(f'<span class="mkey mv mv-{k}"><i class="sw mkt"></i>{VIEW_LEGEND[k]}</span>' for k in present)
+    marks = ('<span class="mkey"><i class="sw dots"></i>S&amp;P high / low around a fall of 20% or more; \u25cb where this gauge topped out or bottomed out nearby</span>'
+             if 'class="mlayer mturn"' in chart else "")
+    legend = marks + "".join(f'<span class="mkey mv mv-{k}"><i class="sw mkt"></i>{VIEW_LEGEND[k]}</span>' for k in present)
     radios = '<span class="mkey" role="radiogroup" aria-label="Which view of the stock market to layer on the chart">' + "".join(f'<label><input type="radio" class="mview-box" name="mview-{esc(uid)}" value="{k}"{" checked" if k == present[0] else ""}> {VIEW_LABEL[k]}</label>'
                      for k in present) + "</span>"
     return (chart + '<div class="legend"><span><i class="sw"></i>This gauge (left scale: Cold to Hot)</span>' + legend + '</div>'
@@ -240,6 +270,58 @@ def market_data(market: dict | None) -> str:
     return '<script type="application/json" id="mkt-data">' + json.dumps(data, allow_nan=False).replace("<", "\\u003c") + "</script>"
 
 
+def timing_text(i: dict) -> str:
+    """The standard economy-timing label for one reading (textbook, not measured here)."""
+    if not i.get("timing"):
+        return ""
+    return esc(str(i["timing"])) + " (" + esc(str(i.get("timing_basis", ""))) + ")"
+
+
+def timing_line(c: dict) -> str:
+    ll = c.get("leadlag")
+    if not isinstance(ll, dict) or not ll.get("short"):
+        return ""
+    return f'<p class="timing">Timing against the stock market: {esc(str(ll["short"]))}.</p>'
+
+
+def _offset_text(g, kind: str) -> str:
+    if not isinstance(g, dict) or "offset" not in g:
+        return "not enough history"
+    if g.get("at_edge"):
+        return "no clear turn nearby"
+    o = int(g["offset"])
+    what = "topped out" if kind == "peak" else "bottomed out"
+    when = "the same month" if o == 0 else f"{abs(o)} month{'s' if abs(o) != 1 else ''} {'after' if o > 0 else 'before'}"
+    return f"{what} {when}"
+
+
+def _history_note(ll: dict) -> str:
+    n = len(ll["turns"]) if isinstance(ll.get("turns"), list) else 0
+    m = ll.get("months")
+    return (f"This history covers {int(m) // 12} years and {n} such fall{'s' if n != 1 else ''} (20% or more)." if isinstance(m, int) and m > 0 else "")
+
+
+def leadlag_html(c: dict) -> str:
+    """'Does it lead or lag the market?': the measured verdict plus what happened around each big market fall."""
+    ll = c.get("leadlag")
+    if not isinstance(ll, dict) or not ll.get("headline"):
+        return ""
+    rows = ""
+    turns = ll.get("turns") if isinstance(ll.get("turns"), list) else []
+    for t in turns:
+        try:
+            a, b = str(t["market_peak"])[:4], str(t["market_trough"])[:4]
+            yr = a if a == b else f"{a}\u2013{b[2:]}"
+            rows += (f'<tr><td>{esc(yr)} ({esc(str(t["drop"]))}%)</td><td>{esc(_offset_text(t.get("peak"), "peak"))}</td>'
+                     f'<td>{esc(_offset_text(t.get("trough"), "trough"))}</td></tr>')
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    table = (f'<table class="ind turns"><thead><tr><th>S&amp;P 500 fall</th><th>Gauge\'s highest reading within 18 months of the market\'s high</th>'
+             f'<th>Gauge\'s lowest reading within 18 months of the market\'s low</th></tr></thead><tbody>{rows}</tbody></table>') if rows else ""
+    return (f'<h4>Does it move before or after the market?</h4><p><b>{esc(str(ll["headline"]))}</b></p>{table}'
+            f'<p class="limit">{esc(plain.LEADLAG_INTRO)} {esc(_history_note(ll))}</p>')
+
+
 def notice_html(c: dict) -> str:
     return f'<p class="limit"><b>Recent change.</b> {esc(str(c["notice"]))}</p>' if c.get("notice") else ""
 
@@ -286,7 +368,7 @@ def render_card(c: dict, market: dict | None = None) -> str:
     mean = lean + c["hot"] if c["band"] in ("hot", "warm") else lean + c["cold"] if c["band"] in ("cool", "cold") else "In its normal range: no strong message either way."
     rows = "".join(
         f'<tr><td><b>{esc(i["label"])}</b><br><span class="sub">{esc(i["explain"])}</span>'
-        f'<br><span class="sub weight">{weight_text(i)}</span></td>'
+        f'<br><span class="sub weight">{weight_text(i)}</span><br><span class="sub timing-ind">{timing_text(i)}</span></td>'
         f'<td class="num">{esc(i["value"] or "–")}</td>'
         f'<td class="num">{"–" if i["score"] is None else pill(i["band"], i["band"].capitalize())}<br><span class="sub">'
         + hotter_text(i) + '</span></td></tr>' for i in c["indicators"])
@@ -298,7 +380,7 @@ def render_card(c: dict, market: dict | None = None) -> str:
       <div class="ch"><span class="ic">{esc(c["icon"])}</span><div><h3>{esc(c["title"])}</h3><div class="ask">{esc(c["asks"])}</div></div></div>
       <div class="cs">{pill(c["band"], c["band_word"])} <span class="stage">{ARROW_ICON[c["direction"]]} {esc(c["direction_word"])}</span></div>
       {thermometer(c["score"])}
-      <p class="mean">{esc(mean)}</p>
+      <p class="mean">{esc(mean)}</p>{timing_line(c)}
       <span class="more">Tap for details</span>
     </summary>
     <div class="detail">
@@ -308,7 +390,8 @@ def render_card(c: dict, market: dict | None = None) -> str:
       <h4>The readings behind it</h4>
       <table class="ind stack"><thead><tr><th>Reading</th><th class="num">Now</th><th class="num">Verdict</th></tr></thead><tbody>{rows}</tbody></table>
       <h4>History since 1995</h4>
-      {chart_pair(c["history"], c["recessions"], c["key"], market)}
+      {chart_pair(c["history"], c["recessions"], c["key"], market, (c.get("leadlag") or {}).get("turns"))}
+      {leadlag_html(c)}
       <p class="sub">Grey bands are recessions. Score as of {esc(c["as_of"] or "?")}.{partial} {data_line(c)}</p>
       <p class="limit"><b>Limits.</b> {esc(c["limit"])}</p>
     </div>
@@ -430,7 +513,7 @@ h1{margin:0;font-size:1.5rem}h2{font-size:1.5rem;line-height:1.25;margin:.3rem 0
 .cols{display:grid;grid-template-columns:1fr;gap:0 24px}@media(min-width:720px){.cols{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr 1fr}}
 ul{margin:.3rem 0 .6rem;padding-left:1.2rem}li{margin:.25rem 0}
 .pill{display:inline-block;padding:3px 11px;border-radius:999px;border:1.5px solid var(--c,var(--bd));background:color-mix(in srgb,var(--c,var(--bd)) 16%,transparent);font-size:.85rem;font-weight:600;white-space:nowrap}
-.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.nojs .mctl{display:none}
+.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl{display:none}
 .mv{display:none}body[data-mview="yoy"] .mv-yoy,body[data-mview="dd"] .mv-dd,body[data-mview="px"] .mv-px{display:inline}body.nomkt .mlayer,body.nomkt .mkey,body.nomkt .mv{display:none!important}.mctl input{margin-right:4px}.drivers{margin:.4rem 0}
 .thermo{position:relative;height:12px;border-radius:8px;margin:12px 0 4px;background:linear-gradient(90deg,var(--cold),var(--cool) 30%,var(--normal) 50%,var(--warm) 70%,var(--hot))}
 .thermo.big{height:18px;border-radius:10px}.marker{position:absolute;top:-5px;width:6px;height:calc(100% + 10px);background:var(--ink);border:2px solid var(--surface);border-radius:4px;transform:translateX(-50%)}

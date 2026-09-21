@@ -197,3 +197,32 @@ NOT_A_SIGNAL = "This is general education, not a buy or sell signal and not pers
 DISCLAIMER = ("This page is general education, not personal financial advice. It measures the mood and conditions of the "
               "market cycle; it cannot predict the future. Over the past 30 years these gauges reflected the known booms and busts "
               "but did not reliably predict stock returns. Talk to a qualified adviser before making decisions about your money.")
+
+
+# Standard "leading / coincident / lagging" behaviour of each reading in the ECONOMY, from the Conference Board's business-cycle
+# indexes where the reading (or its close relative) is a component ("index"), otherwise our judgement ("judgement") or not classified.
+# This is textbook knowledge, NOT something measured here; the measured lead/lag against the stock market is separate.
+INDICATOR_TIMING = {
+    "vix": ("none", "judgement"), "sp500_vs_10y_trend": ("leading", "index"), "cape": ("longrun", "judgement"),
+    "consumer_sentiment": ("leading", "convention"),
+    "baa_10y_spread": ("leading", "convention"), "sloos_ci_tightening": ("leading", "judgement"),
+    "real_policy_rate": ("leading", "judgement"), "policy_rate_12m_change": ("leading", "judgement"),
+    "policy_rate_3m_change": ("leading", "judgement"), "curve_10y_minus_3m": ("leading", "index"),
+    "jobless_claims_yoy": ("leading", "index"), "unemployment_12m_change": ("lagging", "convention"),
+    "industrial_output_yoy": ("coincident", "index"),
+    "profit_share_of_gdp": ("coincident", "judgement"), "profit_growth_yoy": ("coincident", "judgement"),
+    "mortgage_spread": ("none", "judgement"), "price_to_rent": ("lagging", "judgement"), "house_price_yoy": ("lagging", "judgement"),
+    "building_permits_yoy": ("leading", "index"),
+    "term_premium": ("none", "judgement"), "yield_vs_10y_average": ("none", "judgement"), "yield_12m_change": ("none", "judgement"),
+    "business_loan_chargeoffs": ("lagging", "judgement"), "credit_spread_level": ("leading", "convention"),
+}
+TIMING_TEXT = {
+    "leading": "Usually turns before the economy does",
+    "coincident": "Usually moves with the economy",
+    "lagging": "Usually turns after the economy does",
+    "longrun": "Says more about returns over years than about timing",
+    "none": "Not classified as leading or lagging",
+}
+TIMING_BASIS = {"index": "a Conference Board index component or close relative", "convention": "a widely used classification", "judgement": "our judgement, not measured here"}
+
+LEADLAG_INTRO = "Measured on our own history against the S&P 500 stock index, so treat every number as rough: only a handful of big market falls happened in that time."

@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 import plain
+import leadlag
 from cycles import CYCLES
 from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
 from engine import _fetch, compute_cycle, cycle_weights
@@ -126,6 +127,34 @@ def _round_to_100(pcts: dict) -> dict:
     return base
 
 
+def _leadlag(key: str, df: pd.DataFrame, daily: pd.Series | None) -> dict | None:
+    """Measured lead/lag of this gauge against the S&P 500 (recessions as the fallback). None if anything is unavailable."""
+    if daily is None:
+        return None
+    try:
+        score = _monthly(df[f"{key}_score"]).dropna()
+        score.index = score.index.to_timestamp("M")
+        rec = _monthly(df["recession"]) if "recession" in df and df["recession"].notna().any() else None
+        if rec is not None:
+            rec.index = rec.index.to_timestamp("M")
+        r = leadlag.compute(score, daily, rec)
+        if r is None:
+            return None
+        r.pop("profile", None)
+        vm, vr = r["vs_market"], r["vs_recession"]
+        if vm["kind"] not in ("none", "unclear"):
+            r["headline"], r["kind"] = vm["text"], vm["kind"]
+        elif vr and vr["kind"] not in ("none", "unclear"):
+            r["headline"], r["kind"] = "No stable timing with the market. Compared with recessions instead: " + vr["text"][0].lower() + vr["text"][1:], "recession"
+        else:
+            r["headline"], r["kind"] = "No stable timing relationship with the market" + (", or with recessions." if vr else "."), "unclear"
+        r["short"] = {"with": "moves with the market", "leads": "moves ahead of the market", "lags": "follows the market",
+                      "recession": "no stable timing with the market", "unclear": "no stable timing with the market"}[r["kind"]]
+    except Exception:  # noqa: BLE001  optional context: never break the page's numbers
+        return None
+    return r
+
+
 def _indicators(name: str, df: pd.DataFrame) -> list[dict]:
     out = []
     weights = cycle_weights(CYCLES[name])
@@ -142,7 +171,8 @@ def _indicators(name: str, df: pd.DataFrame) -> list[dict]:
             except (ValueError, TypeError):
                 value = f"{v:.2f}"
         s = float(sc.iloc[-1]) if len(sc) else None
-        out.append(dict(name=i.name, label=label, explain=expl, weight=shown[i.name], shares_with=mates, low_confidence=plain.CONFIDENCE_NOTE.get(i.name) if i.confidence < 1 else None, value=value, value_date=lv.index[-1].strftime("%Y-%m-%d") if len(lv) else None,
+        out.append(dict(name=i.name, label=label, explain=expl, timing=plain.TIMING_TEXT[plain.INDICATOR_TIMING[i.name][0]], timing_basis=plain.TIMING_BASIS[plain.INDICATOR_TIMING[i.name][1]],
+                        weight=shown[i.name], shares_with=mates, low_confidence=plain.CONFIDENCE_NOTE.get(i.name) if i.confidence < 1 else None, value=value, value_date=lv.index[-1].strftime("%Y-%m-%d") if len(lv) else None,
                         score=_clean(s), band=band(s) if s is not None else None,
                         hotter_than=None if s is None else round((s + 2) / 4 * 100)))
     return out
@@ -347,6 +377,10 @@ def _mild(label: str, b: str) -> str:
 
 def build(refresh: bool = False, today: pd.Timestamp | None = None, record_events: bool = True) -> dict:
     frames = {n: compute_cycle(n, refresh, today) for n in CYCLES}
+    try:
+        daily_sp = fetch_yahoo_daily("^SP500TR")
+    except Exception:  # noqa: BLE001
+        daily_sp = None
     cycles = []
     for key in plain.ORDER:
         df, info = frames[key], plain.CYCLE_INFO[key]
@@ -367,7 +401,7 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
             stage=label, stage_text=sentence, stage_display=_mild(label, b) if b else label,
             direction_word={"up": info["up"], "down": info["down"], "steady": "steady"}[direction(chg)], as_of=s.index[-1].strftime("%Y-%m-%d") if len(s) else None,
             is_partial=bool(df["is_partial"].iloc[-1]),
-            indicators=_indicators(key, df),
+            indicators=_indicators(key, df), leadlag=_leadlag(key, df, daily_sp),
             history=[[d.strftime("%Y-%m-%d"), round(float(v), 2)] for d, v in hist.items()],
             recessions=_spans(df["recession"].loc[HISTORY_FROM:]) if "recession" in df else [],
             you=info["hot_you"] if b in ("hot", "warm") else info["cold_you"] if b in ("cool", "cold") else None,

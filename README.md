@@ -38,6 +38,13 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   on a right-hand scale, switchable between the past-year change (default), the drop from its previous high, and the price on a log
   scale (the first two remove the long climb so booms and busts stand out). The two lines never share a scale, the caption says so,
   and it never feeds a score. A checkbox hides it; choices are remembered in the browser.
+- Each gauge card says whether it moves before, with or after the stock market (`leadlag.py`): the correlation of the gauge with
+  the S&P 500's past-year change is measured at lags of -24..+24 months, the 90% range of the peak lag comes from a block
+  bootstrap, and where the market relationship is weak or unstable the same test is run against NBER recessions. Charts mark each
+  S&P fall of 20% or more (dotted lines) and where the gauge topped out or bottomed out nearby (hollow circles). Each reading also
+  carries the textbook "leading / coincident / lagging" tag (`plain.INDICATOR_TIMING`; Conference Board classification where one
+  exists, otherwise labelled as our judgement). All descriptive: nothing here feeds a score, and with only four such falls in the
+  data every number is rough.
 - `validate.py <cycle>` tests a cycle against forward S&P 500 returns (`data/validation_<cycle>.txt`).
 
 ## Weights

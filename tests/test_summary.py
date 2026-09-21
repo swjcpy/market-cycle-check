@@ -18,6 +18,14 @@ import summary  # noqa: E402
 from cycles import CYCLES  # noqa: E402
 
 ROOT = Path(__file__).parent.parent
+_REAL_LEADLAG = summary._leadlag
+
+
+@pytest.fixture(autouse=True)
+def cheap_leadlag(request, monkeypatch):
+    """summary.build() would otherwise run the (slow, bootstrapped) lead/lag analysis in every test that builds a summary."""
+    if "real_leadlag" not in request.keywords:
+        monkeypatch.setattr(summary, "_leadlag", lambda key, df, daily: None)
 
 
 def test_band_edges_and_groups():

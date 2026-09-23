@@ -95,5 +95,6 @@ hover(svg, xAt('2025-08-31')); out.fwdLastKnown = tip();
 // a broken chart must not stop the others: the first svg has garbage data
 out.brokenFirst = svgs[0].attrs['data-h'] === 'not json';
 btn(svg, 5).click(); out.zoomAfterBroken = tf(svg).s > 1;
+const dsv = svgs[2]; btn(dsv, 5).click(); out.marksD5 = marks(dsv); btn(dsv, 10).click(); out.marksD10 = marks(dsv);   // a history whose 5y/10y spans overshoot in floating point
 out.hiddenControl = svgs.map(s => body.querySelectorAll('.zctl').find(c => c.attrs['data-for'] === s.attrs['data-uid']).style.display || '');
 console.log(JSON.stringify(out));

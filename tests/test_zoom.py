@@ -111,6 +111,13 @@ def test_script_is_valid_and_wires_zoom_and_view_persistence():
         assert r.returncode == 0, r.stderr
 
 
+def _reversal_d(hist):
+    by = {d[:7]: v for d, v in hist}
+    ts = [("high", "2021-06", 0.55), ("low", "2016-06", 0.6), ("high", "2018-03", 0.3)]       # only the first is in the last 5 years
+    turns = [dict(kind=k, date=d, value=by[d], confirmed=d, swing=w) for k, d, w in ts]
+    return dict(threshold=0.4, trend="up", latest=turns[-1], run=dict(date="2025-01", value=0.2), now=0.2, asof="2025-01", turns=turns)
+
+
 def _reversal(hist):
     by = {d[:7]: v for d, v in hist}
     ts = [("high", "1996-03", None), ("low", "2001-06", 1.2), ("high", "2007-06", 0.8), ("low", "2019-06", 0.6), ("high", "2023-06", 0.3), ("low", "2026-08", 1.5)]
@@ -157,9 +164,11 @@ def test_script_behaviour_under_a_fake_dom():
     hist.append(["2026-09-12", 0.4])                                            # a partial last month: unevenly spaced dates
     mk = _market(381)
     mk["fwd"] = mk["fwd"][:-1]
+    hist_d = [[d.strftime("%Y-%m-%d"), 0.1] for d in pd.date_range("1995-01-31", "2024-12-31", freq="ME")] + [["2025-01-13", 0.2]]
     page = ('<div id="a">' + server.svg_history(hist, [], "a", mk).replace("data-h='" + json.dumps(hist) + "'", "data-h='not json'")
             + server.zoom_controls("a") + '</div><div id="b">' + server.chart_pair(hist, [["2001-04-01", "2001-11-30"]], "b", mk, None, _reversal(hist))
-            + '</div><div id="c">' + server.chart_pair(hist[-24:], [], "c", mk) + '</div>'
+            + '</div><div id="d">' + server.chart_pair(hist_d, [], "d", mk, None, _reversal_d(hist_d)) + '</div>'
+            + '<div id="c">' + server.chart_pair(hist[-24:], [], "c", mk) + '</div>'
             + '<script type="application/json" id="mkt-data">' + server.market_data(mk).split(">", 1)[1].rsplit("<", 1)[0] + '</script>')
     tree = _tree(page)
     r = subprocess.run(["node", str(Path(__file__).parent / "zoom_harness.js")], input=json.dumps({"tree": tree, "js": server.js_source()}), capture_output=True, text=True)
@@ -176,6 +185,7 @@ def test_script_behaviour_under_a_fake_dom():
     assert out["marks20"] == [False, False, True, False, False, True] and out["marks10"] == [False, False, False, True, False, True]
     assert out["marks5"] == [False, False, False, False, True, True]                                     # zoomed in: every turn in view, out-of-view ones hidden
     assert out["startNorev"] is True and out["startChecked"] is False                                    # a saved "hidden" choice is honoured on load
+    assert out["marksD5"] == [True, False, False] and out["marksD10"] == [True, True, False]                # exactly 5y / 10y: the 0.5 tier, not the next one up
     assert out["norevAfter"] is False and out["stored1"] == "1" and out["norev"] is True and out["stored0"] == "0"   # the checkbox switches the layer and remembers it
     assert out["hiddenControl"][-1] == "none"                                            # a 2-year history has nothing to zoom to
 

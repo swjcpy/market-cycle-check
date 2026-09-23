@@ -246,7 +246,8 @@ def zoom_controls(uid: str, reversal: dict | None = None) -> str:
         except (KeyError, TypeError, ValueError):
             th = "0.4"
         marks = (f'<label class="rtoggle"><input type="checkbox" class="rtoggle-box" checked> Show turns</label>'
-                 f'<span class="sub rkey">{DOWN} {UP} a high or low of this gauge, marked once it has moved {th} away from it (small swings appear as you zoom in).</span>')
+                 f'<span class="sub rkey"><b class="rgl">{DOWN} {UP}</b> a high or low of this gauge. Each is drawn only once the gauge has moved {th} away from it, '
+                 f'a few months later, so it was not visible at the time. Small swings appear as you zoom in.</span>')
     return (f'<div class="legend zctl" data-for="{esc(uid)}"><span class="zlab">Zoom:</span>{btns}{marks}'
             '<span class="sub zhint">Pinch, or Ctrl/\u2318 + scroll, to zoom; drag to move; double-click to reset.</span></div>')
 
@@ -452,40 +453,50 @@ def _ym_index(ym) -> int:
     return int(y) * 12 + int(m)
 
 
-def _lvl(v: float, digits: int = 1) -> str:
-    """A signed gauge level, never '-0.0'."""
-    t = f"{v:+.{digits}f}"
-    return t.replace("-", "").replace("+", "") if float(t) == 0 else t
+def _lvl(v: float, digits: int = 2) -> str:
+    """A signed gauge level, rounded half away from zero, never '-0.00'."""
+    q = int(abs(v) * 10 ** digits + 0.5 + 1e-9) / 10 ** digits
+    return f"{q:.{digits}f}" if q == 0 else f"{'-' if v < 0 else '+'}{q:.{digits}f}"
 
 
 def reversal_note(r) -> str:
-    """Plain-language state of the gauge's trend turns: the latest confirmed turn, and how far it has come since (with the level that
-    would count as the next turn). Describes what already happened; empty when nothing is confirmed or the data is malformed."""
+    """Plain-language state of the gauge's direction changes: the latest confirmed one, how far it has come since (with the level that would
+    count as the next), and how often it has turned lately. Describes what already happened; empty when nothing is confirmed or the data is
+    malformed."""
     try:
         th, now, latest, run, trend, asof = float(r["threshold"]), float(r["now"]), r["latest"], r["run"], r["trend"], r["asof"]
         if not latest or trend not in ("up", "down") or not run:
             return ""
         val, run_v, high = float(latest["value"]), float(run["value"]), latest["kind"] == "high"
-        if not all(map(math.isfinite, (th, now, val, run_v))):
+        if not all(map(math.isfinite, (th, now, val, run_v))) or high != (trend == "down"):
             return ""
         m = _ym_index(asof) - _ym_index(latest["confirmed"])
-        ago = "this month" if m <= 0 else "1 month ago" if m == 1 else f"{m} months ago" if m < 24 else f"about {m // 12} years ago"
-        first = (f"Latest turn: it {'peaked' if high else 'bottomed'} at {_lvl(val)} in {_ym_name(latest['date'])} and was confirmed turning "
-                 f"{'down' if high else 'up'} {ago}.")
+        ago = "this month" if m <= 0 else "1 month ago" if m == 1 else f"{m} months ago" if m < 24 else f"about {round(m / 12)} years ago"
+        first = (f"Latest change of direction: it {'peaked' if high else 'bottomed'} at {_lvl(val)} in {_ym_name(latest['date'])} and was "
+                 f"confirmed turning {'down' if high else 'up'} {ago}.")
         if trend == "down":
-            since = ("Since then it has kept falling and is at its lowest point since the peak." if abs(now - run_v) < 0.005 else
-                     f"Since then it fell to {_lvl(run_v, 2)} and is now {now - run_v:.2f} above that low; it would need to rise to {_lvl(run_v + th, 2)} to count as a turn up.")
+            since = (f"Since then it has not bounced back by {th:.1f}, and is at its lowest point since the peak." if abs(now - run_v) < 0.005 else
+                     f"Since then it fell to {_lvl(run_v)} and is now {now - run_v:.2f} above that low; it would need to rise to {_lvl(run_v + th)} to count as a turn up.")
         else:
-            since = ("Since then it has kept rising and is at its highest point since the low." if abs(now - run_v) < 0.005 else
-                     f"Since then it rose to {_lvl(run_v, 2)} and is now {run_v - now:.2f} below that high; it would need to fall to {_lvl(run_v - th, 2)} to count as a turn down.")
-        return f"{first} {since} This only describes what the gauge has already done."
+            since = (f"Since then it has not pulled back by {th:.1f}, and is at its highest point since the low." if abs(now - run_v) < 0.005 else
+                     f"Since then it rose to {_lvl(run_v)} and is now {run_v - now:.2f} below that high; it would need to fall to {_lvl(run_v - th)} to count as a turn down.")
+        rate = ""
+        turns = r.get("turns")
+        if isinstance(turns, list):
+            recent = sorted(_ym_index(t["confirmed"]) for t in turns if isinstance(t, dict) and 0 <= _ym_index(asof) - _ym_index(t["confirmed"]) < 60)
+            k = len(recent)
+            quick = sum(1 for x, y in zip(recent, recent[1:]) if y - x <= 3)             # changes followed by another within 3 months
+            rate = " It has changed direction " + ("not at all" if k == 0 else "once" if k == 1 else f"{k} times") + " in the last 5 years."
+            if quick >= 2 and quick >= 0.3 * (k - 1):
+                rate += " Often a change was followed by another within 3 months, so treat a single one with caution."
+        return f"{first} {since}{rate} This only describes what the gauge has already done, using data to {_ym_name(asof)}."
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
         return ""
 
 
 def reversal_html(r) -> str:
     note = reversal_note(r)
-    return f'<p class="reversal"><b>Trend turns:</b> {esc(note)}</p>' if note else ""
+    return f'<p class="reversal"><b>Direction changes:</b> {esc(note)}</p>' if note else ""
 
 
 def notice_html(c: dict) -> str:
@@ -679,7 +690,7 @@ h1{margin:0;font-size:1.5rem}h2{font-size:1.5rem;line-height:1.25;margin:.3rem 0
 .cols{display:grid;grid-template-columns:1fr;gap:0 24px}@media(min-width:720px){.cols{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr 1fr}}
 ul{margin:.3rem 0 .6rem;padding-left:1.2rem}li{margin:.25rem 0}
 .pill{display:inline-block;padding:3px 11px;border-radius:999px;border:1.5px solid var(--c,var(--bd));background:color-mix(in srgb,var(--c,var(--bd)) 16%,transparent);font-size:.85rem;font-weight:600;white-space:nowrap}
-.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl,.nojs .zctl{display:none}.zbtn{font:inherit;font-size:.8rem;color:var(--ink2);background:transparent;border:1px solid var(--bd);border-radius:999px;padding:3px 12px;min-height:30px;cursor:pointer}.zbtn.on{color:var(--ink);border-color:var(--line);font-weight:600}.zctl{align-items:center}.zlab{white-space:nowrap}.rmark{font-size:11px;fill:var(--line);visibility:hidden}.rtoggle{white-space:nowrap;cursor:pointer;font-size:.8rem}.rkey{font-size:.75rem}body.norev .rlayer,body.norev .rkey{display:none!important}.chart{user-select:none;-webkit-user-select:none}.zhint{font-size:.75rem}
+.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl,.nojs .zctl{display:none}.zbtn{font:inherit;font-size:.8rem;color:var(--ink2);background:transparent;border:1px solid var(--bd);border-radius:999px;padding:3px 12px;min-height:30px;cursor:pointer}.zbtn.on{color:var(--ink);border-color:var(--line);font-weight:600}.zctl{align-items:center}.zlab{white-space:nowrap}.rmark{font-size:11px;fill:var(--line);visibility:hidden}.rtoggle{white-space:nowrap;cursor:pointer;font-size:.8rem}.rkey{font-size:.75rem}.rgl{color:var(--line)}body.norev .rlayer,body.norev .rkey{display:none!important}.chart{user-select:none;-webkit-user-select:none}.zhint{font-size:.75rem}
 .mv{display:none}body[data-mview="yoy"] .mv-yoy,body[data-mview="fwd"] .mv-fwd,body[data-mview="dd"] .mv-dd,body[data-mview="px"] .mv-px{display:inline}body.nomkt .mlayer,body.nomkt .mkey,body.nomkt .mv{display:none!important}.mctl input{margin-right:4px}.drivers{margin:.4rem 0}
 .thermo{position:relative;height:12px;border-radius:8px;margin:12px 0 4px;background:linear-gradient(90deg,var(--cold),var(--cool) 30%,var(--normal) 50%,var(--warm) 70%,var(--hot))}
 .thermo.big{height:18px;border-radius:10px}.marker{position:absolute;top:-5px;width:6px;height:calc(100% + 10px);background:var(--ink);border:2px solid var(--surface);border-radius:4px;transform:translateX(-50%)}
@@ -730,7 +741,7 @@ var shown=0;btns.forEach(function(x){var y=+x.getAttribute('data-y');if(y&&y>=T-
 function scale(view){var s=svg.getAttribute('data-m-'+view);if(!s)return null;var p=s.split(',');return [parseFloat(p[0]),parseFloat(p[1])]}
 function svgX(cx){var r=svg.getBoundingClientRect();return (cx-r.left)/r.width*vb.width}
 function apply(){var s=1/(b-a);zoomG.forEach(function(z){z.setAttribute('transform',a===0&&b===1?'':'translate('+(padL-s*(padL+a*W))+',0) scale('+s+',1)')});
-fixed.forEach(function(e){var f=+e.getAttribute('data-f'),x=padL+(f-a)/(b-a)*W;var am=e.getAttribute('data-a'),mark=e.getAttribute('class')==='rmark',need=T*(b-a)>20?1:T*(b-a)>10?0.7:T*(b-a)>5?0.5:0,ok=f>=a-1e-9&&f<=b+1e-9&&(e.tagName==='circle'||mark||x<=padL+W-56)&&(am===null||+am>=need-1e-9);e.style.visibility=mark?(ok?'visible':'hidden'):(ok?'':'hidden');if(e.tagName==='circle')e.setAttribute('cx',x);else e.setAttribute('x',x+(+e.getAttribute('data-dx')||0))});
+fixed.forEach(function(e){var f=+e.getAttribute('data-f'),x=padL+(f-a)/(b-a)*W;var am=e.getAttribute('data-a'),mark=e.getAttribute('class')==='rmark',sp=T*(b-a),need=sp>20+1e-6?1:sp>10+1e-6?0.7:sp>5+1e-6?0.5:0,ok=f>=a-1e-9&&f<=b+1e-9&&(e.tagName==='circle'||mark||x<=padL+W-56)&&(am===null||+am>=need-1e-9);e.style.visibility=mark?(ok?'visible':'hidden'):(ok?'':'hidden');if(e.tagName==='circle')e.setAttribute('cx',x);else e.setAttribute('x',x+(+e.getAttribute('data-dx')||0))});
 ticks.forEach(function(e){if(e.parentNode)e.parentNode.removeChild(e)});ticks=[];
 var span=T*(b-a),step=span>25?5:span>10?2:1,ya=new Date(t0+a*(t1-t0)).getUTCFullYear();
 for(var y=ya;y<=new Date(t0+b*(t1-t0)).getUTCFullYear();y++){if(y%step)continue;var f=(Date.UTC(y,0,1)-t0)/(t1-t0),x=padL+(f-a)/(b-a)*W;if(x<padL+8||x>padL+W-8)continue;

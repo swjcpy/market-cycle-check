@@ -52,7 +52,7 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   topped out or bottomed out earlier, in the same month or later than the S&P (a high or low point a year or more from the fall is not
   called a turn and is not counted; a month either way counts as the same time). All descriptive: nothing here feeds a score, and with only four such falls in the
   data every number is rough.
-- Trend turns (`reversals.py`): a gauge's high or low is confirmed once the gauge has moved 0.4 (a fifth of its -2..+2 range) away
+- Direction changes (`reversals.py`): a gauge's high or low is confirmed once the gauge has moved 0.4 (a tenth of its -2..+2 range) away
   from it; each confirmation uses only data up to that month, and the mark is then placed on the true extreme, so a turn appears on
   a chart about 2-3 months after it happened (longer for slow or quarterly gauges). Each card says when the latest turn was
   confirmed and how far the gauge has moved since; the chart marks confirmed highs and lows with small triangles (small swings only

@@ -2,8 +2,10 @@
 placed on the true extreme. Descriptive only, nothing here feeds a score or predicts anything. Each confirmation uses data up to that
 month only (no look-ahead), but the marker sits on the earlier extreme, so a turn only shows up on a chart once it is confirmed.
 
-THRESHOLD = 0.4 on the gauge's -2..+2 scale (a fifth of its range). Chosen from how often it fires and how quickly (about one turn every
-5-20 months, confirmed a median 2-3 months after the extreme), not by fitting to market returns.
+THRESHOLD = 0.4 on the gauge's -2..+2 scale (a tenth of its range). Chosen from how often it fires and how quickly, not by fitting to market
+returns. Measured on 1995-2026 (recomputed for the 8 gauges and the headline): a turn every 4.5 months (investor mood) to about 20 months
+(distressed debt), typically 7-15; confirmed a median of 2-3 months after the extreme (3-6 for the quarterly, slow gauges; the slowest took
+18). On noisy gauges half the turns follow the previous one within 3 months, i.e. they often reverse.
 """
 THRESHOLD = 0.4
 EPS = 1e-9

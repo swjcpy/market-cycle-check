@@ -14,6 +14,7 @@ import json
 import math
 import logging
 import logging.handlers
+import re
 import socketserver
 import subprocess
 import threading
@@ -51,11 +52,12 @@ esc = html.escape
 PAD_L, PAD_R = 60, 64          # left labels (Cold..Hot) and right labels (S&P 500); shared with the hover script
 PAD_T, PAD_B = 10, 22
 MAX_MARKET_POINTS = 1500       # a sane cap: the series is repeated in every chart
-MARKET_VIEWS = ("yoy", "dd", "px")     # past-year change (default), drop from the previous high, price on a log scale
+MARKET_VIEWS = ("yoy", "fwd", "dd", "px")     # past-year change (default), NEXT-year change (hindsight), drop from the previous high, price on a log scale
 PX_TICKS = (500, 1000, 2000, 5000, 10000, 20000, 50000)
 SOURCE_KEY = {"px": "points"}          # the price series is stored as "points" in summary.json
-VIEW_LABEL = {"yoy": "Past-year change", "dd": "Drop from its high", "px": "Price (log scale)"}
+VIEW_LABEL = {"yoy": "Past-year change", "fwd": "Next-year change (hindsight)", "dd": "Drop from its high", "px": "Price (log scale)"}
 VIEW_LEGEND = {"yoy": "S&amp;P 500: how much it changed over the past year (right scale)",
+               "fwd": "S&amp;P 500: how much it changed over the NEXT year after each date (right scale; hindsight, so it stops a year ago)",
                "dd": "S&amp;P 500: how far it is below its previous high (right scale)",
                "px": "S&amp;P 500 with dividends, price (right scale, logarithmic)"}
 MINUS = "\u2212"
@@ -110,13 +112,15 @@ def _view_scale(key: str, vals: list) -> tuple:
     return lo, hi, (lambda v: v), [(t, _pct(t)) for t in ticks if lo < t < hi]
 
 
-def _turn_markers(turns, hist: list, X, Y, pad_t: int, pad_b: int, h: int) -> str:
+def _turn_markers(turns, hist: list, X, Y, pad_t: int, pad_b: int, h: int, fx=None) -> tuple:
     """Dotted lines at the S&P 500's high and low around each big fall, and hollow circles where this gauge topped out or bottomed
-    out nearby. Drawn with the market layer (hidden with it)."""
+    out nearby. Returns (lines, points): the lines stretch with the chart when it is zoomed, the labels and circles are repositioned
+    by the script (they carry data-f, their position as a fraction of the plot width). Both are hidden with the market layer."""
     if not isinstance(turns, list):
-        return ""
+        return "", ""
+    fx = fx or (lambda d: 0.0)
     by_month = {d[:7]: (d, v) for d, v in hist}
-    out = []
+    lines, pts = [], []
     for t in turns:
         try:
             for key, glyph, y_txt in (("market_peak", "\u25bc S&P high", pad_t + 9), ("market_trough", "\u25b2 S&P low", h - pad_b - 4)):
@@ -124,16 +128,16 @@ def _turn_markers(turns, hist: list, X, Y, pad_t: int, pad_b: int, h: int) -> st
                 datetime.fromisoformat(d)
                 if hist[0][0] <= d <= hist[-1][0]:
                     x = X(d)
-                    out.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{pad_t}" y2="{h - pad_b}" stroke="var(--ink2)" stroke-dasharray="1 3" opacity=".7"/>'
-                               f'<text x="{x + 3:.1f}" y="{y_txt}" class="axis tlabel">{glyph}</text>')
+                    lines.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{pad_t}" y2="{h - pad_b}" stroke="var(--ink2)" stroke-dasharray="1 3" opacity=".7" vector-effect="non-scaling-stroke"/>')
+                    pts.append(f'<text x="{x + 3:.1f}" y="{y_txt}" class="axis tlabel" data-f="{fx(d):.5f}" data-dx="3">{glyph}</text>')
             for kind in ("peak", "trough"):
                 g = t.get(kind)
                 if g and not g.get("at_edge") and str(g.get("date"))[:7] in by_month:
                     d, v = by_month[str(g["date"])[:7]]
-                    out.append(f'<circle cx="{X(d):.1f}" cy="{Y(v):.1f}" r="5" fill="none" stroke="var(--line)" stroke-width="2"/>')
+                    pts.append(f'<circle cx="{X(d):.1f}" cy="{Y(v):.1f}" r="5" fill="none" stroke="var(--line)" stroke-width="2" data-f="{fx(d):.5f}"/>')
         except (TypeError, ValueError, KeyError, AttributeError):
             continue
-    return '<g class="mlayer mturn">' + "".join(out) + "</g>" if out else ""
+    return ('<g class="mlayer mturn">' + "".join(lines) + "</g>" if lines else "", '<g class="mlayer mturn-pt">' + "".join(pts) + "</g>" if pts else "")
 
 
 def svg_history(hist: list, recessions: list, uid: str, market: dict | None = None, turns: list | None = None, w: int = 640, h: int = 220) -> str:
@@ -155,38 +159,60 @@ def svg_history(hist: list, recessions: list, uid: str, market: dict | None = No
             views[key] = (pts, *_view_scale(key, [v for _, v in pts]))
     extra = "".join(f' data-m-{k}="{lo:.5f},{hi:.5f}"' for k, (_, lo, hi, _, _) in views.items())
     label = f"History of this gauge since {hist[0][0][:4]}" + (" with the S&P 500 stock index layered on a right-hand scale" if views else "")
-    parts = [f'<svg class="chart" viewBox="0 0 {w} {h}" role="img" aria-label="{label}" data-h=\'{json.dumps(hist)}\' data-uid="{esc(uid)}"{extra}>']
-    parts.append(f'<rect x="{pad_l}" y="{Y(2.2):.1f}" width="{w - pad_l - pad_r}" height="{Y(1) - Y(2.2):.1f}" fill="var(--hot)" opacity=".10"/>')
-    parts.append(f'<rect x="{pad_l}" y="{Y(-1):.1f}" width="{w - pad_l - pad_r}" height="{Y(-2.2) - Y(-1):.1f}" fill="var(--cold)" opacity=".10"/>')
+    plot_w = w - pad_l - pad_r
+    fx = lambda d: (X(d) - pad_l) / plot_w  # noqa: E731   position as a fraction of the plot width (the script repositions points with it)
+    clip = "zc-" + re.sub(r"[^A-Za-z0-9_-]", "_", uid)                 # a valid id and url(#...) whatever the uid holds
+    parts = [f'<svg class="chart" viewBox="0 0 {w} {h}" role="img" aria-label="{label}" data-h=\'{json.dumps(hist)}\' data-uid="{esc(uid)}"{extra}>',
+             f'<defs><clipPath id="{clip}"><rect x="{pad_l}" y="0" width="{plot_w}" height="{h}"/></clipPath></defs>']
+    parts.append(f'<rect x="{pad_l}" y="{Y(2.2):.1f}" width="{plot_w}" height="{Y(1) - Y(2.2):.1f}" fill="var(--hot)" opacity=".10"/>')
+    parts.append(f'<rect x="{pad_l}" y="{Y(-1):.1f}" width="{plot_w}" height="{Y(-2.2) - Y(-1):.1f}" fill="var(--cold)" opacity=".10"/>')
+    shade = []                                                      # recession bands: stretch with the chart but stay UNDER the grid lines
     for a, b in recessions:
         xa, xb = max(X(a), pad_l), min(X(b), w - pad_r)
         if xb > xa:
-            parts.append(f'<rect x="{xa:.1f}" y="{pad_t}" width="{xb - xa:.1f}" height="{h - pad_t - pad_b}" fill="var(--ink)" opacity=".10"/>')
+            shade.append(f'<rect x="{xa:.1f}" y="{pad_t}" width="{xb - xa:.1f}" height="{h - pad_t - pad_b}" fill="var(--ink)" opacity=".10"/>')
+    if shade:
+        parts.append(f'<g clip-path="url(#{clip})"><g class="zoom">' + "".join(shade) + '</g></g>')
     for v, lab in ((2, "Hot"), (0, "Normal"), (-2, "Cold")):
         parts.append(f'<line x1="{pad_l}" x2="{w - pad_r}" y1="{Y(v):.1f}" y2="{Y(v):.1f}" stroke="var(--grid)" stroke-width="{1.4 if v == 0 else 1}"/>')
         parts.append(f'<text x="{pad_l - 6}" y="{Y(v) + 4:.1f}" text-anchor="end" class="axis">{lab}</text>')
     y0, y1 = int(hist[0][0][:4]), int(hist[-1][0][:4])
     for yr in range((y0 // 5 + 1) * 5, y1 + 1, 5):
         x = X(f"{yr}-01-01")
-        parts.append(f'<text x="{x:.1f}" y="{h - 5}" text-anchor="middle" class="axis">{yr}</text>')
+        parts.append(f'<text x="{x:.1f}" y="{h - 5}" text-anchor="middle" class="axis ytick">{yr}</text>')
+    zoomed = []                                                     # everything that stretches when the chart is zoomed in time
     for key, (pts, lo, hi, tf, ticks) in views.items():
         YM = lambda v, lo=lo, hi=hi, tf=tf: pad_t + (hi - tf(v)) / (hi - lo) * (h - pad_t - pad_b)  # noqa: E731
-        parts.append(f'<g class="mlayer mv mv-{key}">')
-        for t, txt in ticks:
-            parts.append(f'<line x1="{w - pad_r}" x2="{w - pad_r + 4}" y1="{YM(t):.1f}" y2="{YM(t):.1f}" stroke="var(--ink2)"/>'
-                         f'<text x="{w - pad_r + 7}" y="{YM(t) + 4:.1f}" class="axis">{txt}</text>')
+        parts.append(f'<g class="mlayer mv mv-{key} mtick">' + "".join(
+            f'<line x1="{w - pad_r}" x2="{w - pad_r + 4}" y1="{YM(t):.1f}" y2="{YM(t):.1f}" stroke="var(--ink2)"/>'
+            f'<text x="{w - pad_r + 7}" y="{YM(t) + 4:.1f}" class="axis">{txt}</text>' for t, txt in ticks) + '</g>')
         line = " ".join(f"{X(d):.1f},{YM(v):.1f}" for d, v in pts)
-        parts.append(f'<polyline class="mline" points="{line}" fill="none" stroke="var(--ink2)" stroke-width="1.4" stroke-dasharray="6 3" stroke-linejoin="round" opacity=".9"/></g>')
+        zoomed.append(f'<g class="mlayer mv mv-{key}"><polyline class="mline" points="{line}" fill="none" stroke="var(--ink2)" stroke-width="1.4" stroke-dasharray="6 3" '
+                      f'stroke-linejoin="round" opacity=".9" vector-effect="non-scaling-stroke"/></g>')
     pts = " ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in hist)
-    parts.append(f'<polyline points="{pts}" fill="none" stroke="var(--line)" stroke-width="2.4" stroke-linejoin="round"/>')
-    if views:
-        parts.append(_turn_markers(turns, hist, X, Y, pad_t, pad_b, h))
+    zoomed.append(f'<polyline points="{pts}" fill="none" stroke="var(--line)" stroke-width="2.4" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>')
+    turn_lines, turn_points = _turn_markers(turns, hist, X, Y, pad_t, pad_b, h, fx) if views else ("", "")
+    zoomed.append(turn_lines)
+    parts.append(f'<g clip-path="url(#{clip})"><g class="zoom">' + "".join(zoomed) + '</g></g>')
+    parts.append(turn_points)
     lx, ly = X(hist[-1][0]), Y(hist[-1][1])
-    parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="5" fill="var(--line)" stroke="var(--surface)" stroke-width="2"/>')
+    parts.append(f'<circle class="zpt" data-f="{fx(hist[-1][0]):.5f}" cx="{lx:.1f}" cy="{ly:.1f}" r="5" fill="var(--line)" stroke="var(--surface)" stroke-width="2"/>')
     mdot = '<circle class="mdot mlayer" style="display:none" r="3.5" fill="var(--ink2)" stroke="var(--surface)" stroke-width="1.5"/>' if views else ""
     parts.append(f'<g class="hover" style="display:none"><line class="vline" y1="{pad_t}" y2="{h - pad_b}" stroke="var(--ink2)" stroke-width="1"/>'
                  f'{mdot}<circle class="dot" r="4" fill="var(--line)" stroke="var(--surface)" stroke-width="2"/></g></svg>')
     return "".join(parts)
+
+
+ZOOM_YEARS = (20, 10, 5, 2)
+
+
+def zoom_controls(uid: str) -> str:
+    """Range buttons under a chart (the script hides ranges longer than the chart's history and does the zooming; without the
+    script the whole block is hidden and the chart simply shows everything)."""
+    btns = '<button type="button" class="zbtn on" data-y="0" aria-pressed="true">All</button>' + "".join(
+        f'<button type="button" class="zbtn" data-y="{y}" aria-pressed="false">{y}y</button>' for y in ZOOM_YEARS)
+    return (f'<div class="legend zctl" data-for="{esc(uid)}"><span class="zlab">Zoom:</span>{btns}'
+            '<span class="sub zhint">Pinch, or Ctrl/\u2318 + scroll, to zoom; drag to move; double-click to reset.</span></div>')
 
 
 def chart_pair(hist: list, recessions: list, uid: str, market: dict | None, turns: list | None = None) -> str:
@@ -196,19 +222,24 @@ def chart_pair(hist: list, recessions: list, uid: str, market: dict | None, turn
     except Exception:  # noqa: BLE001  the price layer is optional context: never let it take the chart (or page) down
         log.exception("price layer failed for %s", uid)
         chart = svg_history(hist, recessions, uid)
+    if not chart:
+        return chart
+    zoom = zoom_controls(uid)
     present = [k for k in MARKET_VIEWS if f'mv-{k}"' in chart]
     if not present:
-        return chart
+        return chart + zoom
     marks = ('<span class="mkey"><i class="sw dots"></i>S&amp;P high / low around a fall of 20% or more; \u25cb where this gauge topped out or bottomed out nearby</span>'
              if 'class="mlayer mturn"' in chart else "")
     legend = marks + "".join(f'<span class="mkey mv mv-{k}"><i class="sw mkt"></i>{VIEW_LEGEND[k]}</span>' for k in present)
     radios = '<span class="mkey" role="radiogroup" aria-label="Which view of the stock market to layer on the chart">' + "".join(f'<label><input type="radio" class="mview-box" name="mview-{esc(uid)}" value="{k}"{" checked" if k == present[0] else ""}> {VIEW_LABEL[k]}</label>'
                      for k in present) + "</span>"
-    return (chart + '<div class="legend"><span><i class="sw"></i>This gauge (left scale: Cold to Hot)</span>' + legend + '</div>'
+    return (chart + zoom + '<div class="legend"><span><i class="sw"></i>This gauge (left scale: Cold to Hot)</span>' + legend + '</div>'
             '<div class="legend mctl"><span class="mkey">Stock market layer:</span>' + radios +
             '<label class="mtoggle"><input type="checkbox" class="mtoggle-box" checked> Show</label></div>'
             '<p class="sub mkey">The grey line is the stock market (what the SPY fund follows). The two lines use different scales, so where they '
-            'cross means nothing, and moving together does not mean a gauge predicts the market: in our tests none did reliably.</p>')
+            'cross means nothing, and moving together does not mean a gauge predicts the market: in our tests none did reliably.'
+            + ('<span class="mv mv-fwd"> Next-year view: neighbouring dates share 11 of their 12 months, so this line is smooth by construction, and with '
+               'only a few big falls it can look more convincing than it is.</span>' if "fwd" in present else "") + '</p>')
 
 
 def thermometer(score: float | None, big: bool = False) -> str:
@@ -513,8 +544,8 @@ h1{margin:0;font-size:1.5rem}h2{font-size:1.5rem;line-height:1.25;margin:.3rem 0
 .cols{display:grid;grid-template-columns:1fr;gap:0 24px}@media(min-width:720px){.cols{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr 1fr}}
 ul{margin:.3rem 0 .6rem;padding-left:1.2rem}li{margin:.25rem 0}
 .pill{display:inline-block;padding:3px 11px;border-radius:999px;border:1.5px solid var(--c,var(--bd));background:color-mix(in srgb,var(--c,var(--bd)) 16%,transparent);font-size:.85rem;font-weight:600;white-space:nowrap}
-.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl{display:none}
-.mv{display:none}body[data-mview="yoy"] .mv-yoy,body[data-mview="dd"] .mv-dd,body[data-mview="px"] .mv-px{display:inline}body.nomkt .mlayer,body.nomkt .mkey,body.nomkt .mv{display:none!important}.mctl input{margin-right:4px}.drivers{margin:.4rem 0}
+.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl,.nojs .zctl{display:none}.zbtn{font:inherit;font-size:.8rem;color:var(--ink2);background:transparent;border:1px solid var(--bd);border-radius:999px;padding:3px 12px;min-height:30px;cursor:pointer}.zbtn.on{color:var(--ink);border-color:var(--line);font-weight:600}.zctl{align-items:center}.zlab{white-space:nowrap}.chart{user-select:none;-webkit-user-select:none}.zhint{font-size:.75rem}
+.mv{display:none}body[data-mview="yoy"] .mv-yoy,body[data-mview="fwd"] .mv-fwd,body[data-mview="dd"] .mv-dd,body[data-mview="px"] .mv-px{display:inline}body.nomkt .mlayer,body.nomkt .mkey,body.nomkt .mv{display:none!important}.mctl input{margin-right:4px}.drivers{margin:.4rem 0}
 .thermo{position:relative;height:12px;border-radius:8px;margin:12px 0 4px;background:linear-gradient(90deg,var(--cold),var(--cool) 30%,var(--normal) 50%,var(--warm) 70%,var(--hot))}
 .thermo.big{height:18px;border-radius:10px}.marker{position:absolute;top:-5px;width:6px;height:calc(100% + 10px);background:var(--ink);border:2px solid var(--surface);border-radius:4px;transform:translateX(-50%)}
 .thermo-lab{display:flex;justify-content:space-between;font-size:.72rem;color:var(--ink2)}
@@ -541,24 +572,51 @@ JS = """
 var el=document.getElementById('mkt-data'),M={};try{M=el?JSON.parse(el.textContent):{}}catch(e){}
 function mval(view,d){var A=M[view]||[],lo=0,hi=A.length-1,r=null;while(lo<=hi){var m=(lo+hi)>>1;if(A[m][0]<=d){r=A[m];lo=m+1}else hi=m-1}return r}
 function word(v){return v>=1?'hot':v>=.35?'warm':v>-.35?'normal':v>-1?'cool':'cold'}
-function txt(view,v){if(view==='px')return Math.round(v).toLocaleString();var a=Math.abs(v).toFixed(0);return view==='dd'?(v>-0.5?'at its high':a+'% below its high'):((Math.round(v)===0?'':(v>0?'+':'\\u2212'))+a+'% past year')}
+function txt(view,v){if(view==='px')return Math.round(v).toLocaleString();var a=Math.abs(v).toFixed(0);if(view==='dd')return v>-0.5?'at its high':a+'% below its high';return (Math.round(v)===0?'':(v>0?'+':'−'))+a+(view==='fwd'?'% next year':'% past year')}
 var body=document.body;body.classList.remove('nojs');var boxes=document.querySelectorAll('.mtoggle-box'),radios=document.querySelectorAll('.mview-box');
 function store(k,v){try{localStorage.setItem(k,v)}catch(e){}}
 function load(k){try{return localStorage.getItem(k)}catch(e){return null}}
 function applyOn(on){body.classList.toggle('nomkt',!on);boxes.forEach(function(b){b.checked=on})}
 function applyView(v){body.setAttribute('data-mview',v);radios.forEach(function(r){r.checked=(r.value===v)})}
-applyOn(load('mc-mkt')!=='0');var sv=load('mc-mview');if(sv==='yoy'||sv==='dd'||sv==='px')applyView(sv);
+applyOn(load('mc-mkt')!=='0');var sv=load('mc-mview'),known=false;radios.forEach(function(r){if(r.value===sv)known=true});if(known)applyView(sv);
 boxes.forEach(function(b){b.addEventListener('change',function(){applyOn(b.checked);store('mc-mkt',b.checked?'1':'0')})});
 radios.forEach(function(r){r.addEventListener('change',function(){if(r.checked){applyView(r.value);store('mc-mview',r.value)}})});
-document.querySelectorAll('svg.chart').forEach(function(svg){var data=JSON.parse(svg.getAttribute('data-h')),g=svg.querySelector('.hover'),vl=g.querySelector('.vline'),dot=g.querySelector('.dot'),md=g.querySelector('.mdot');
-var vb=svg.viewBox.baseVal,padL=__PADL__,padR=__PADR__,padT=__PADT__,padB=__PADB__;
-function scale(view){var a=svg.getAttribute('data-m-'+view);if(!a)return null;var p=a.split(',');return [parseFloat(p[0]),parseFloat(p[1])]}
-function move(e){var r=svg.getBoundingClientRect(),x=(e.clientX-r.left)/r.width*vb.width;var f=Math.min(1,Math.max(0,(x-padL)/(vb.width-padL-padR)));var i=Math.round(f*(data.length-1));var p=data[i];
-var px=padL+i/(data.length-1)*(vb.width-padL-padR),plotH=vb.height-padT-padB;var py=padT+(2.2-p[1])/4.4*plotH;vl.setAttribute('x1',px);vl.setAttribute('x2',px);dot.setAttribute('cx',px);dot.setAttribute('cy',py);g.style.display='';
-var view=body.getAttribute('data-mview'),on=!body.classList.contains('nomkt'),mv=mval(view,p[0]),sc=scale(view),extra='';
-if(mv&&on&&sc){extra=' · S&P 500 '+txt(view,mv[1])+(mv[0]<p[0]?' ('+mv[0].slice(0,10)+')':'');if(md){md.style.display='';var t=view==='px'?Math.log(mv[1]):mv[1];md.setAttribute('cx',px);md.setAttribute('cy',padT+(sc[1]-t)/(sc[1]-sc[0])*plotH)}}
-tip.style.display='block';tip.style.left=Math.min(window.innerWidth-230,e.clientX+12)+'px';tip.style.top=(e.clientY-36)+'px';tip.textContent=p[0].slice(0,7)+': '+word(p[1])+' ('+(p[1]>0?'+':'')+p[1].toFixed(1)+')'+extra;}
-svg.addEventListener('pointermove',move);svg.addEventListener('pointerleave',function(){g.style.display='none';tip.style.display='none'});});})();
+var NS='http://www.w3.org/2000/svg';
+document.querySelectorAll('svg.chart').forEach(function(svg){try{init(svg)}catch(err){}});
+function init(svg){var data=JSON.parse(svg.getAttribute('data-h')),g=svg.querySelector('.hover'),vl=g.querySelector('.vline'),dot=g.querySelector('.dot'),md=g.querySelector('.mdot');
+var vb=svg.viewBox.baseVal,padL=__PADL__,padR=__PADR__,padT=__PADT__,padB=__PADB__,W=vb.width-padL-padR,plotH=vb.height-padT-padB;
+var n=data.length,t0=Date.parse(data[0][0]),t1=Date.parse(data[n-1][0]),T=(t1-t0)/31557600000,a=0,b=1,fr=data.map(function(p){return Math.min(1,(Date.parse(p[0])-t0)/(t1-t0))});
+var zoomG=svg.querySelectorAll('.zoom'),fixed=svg.querySelectorAll('[data-f]'),ticks=svg.querySelectorAll('.ytick'),uid=svg.getAttribute('data-uid'),ctl=null;
+document.querySelectorAll('.zctl').forEach(function(c){if(c.getAttribute('data-for')===uid)ctl=c});
+var btns=ctl?ctl.querySelectorAll('.zbtn'):[];
+var shown=0;btns.forEach(function(x){var y=+x.getAttribute('data-y');if(y&&y>=T-0.5)x.style.display='none';else if(y)shown++;x.addEventListener('click',function(){setRange(y?1-y/T:0,1)})});if(ctl&&!shown)ctl.style.display='none';
+function scale(view){var s=svg.getAttribute('data-m-'+view);if(!s)return null;var p=s.split(',');return [parseFloat(p[0]),parseFloat(p[1])]}
+function svgX(cx){var r=svg.getBoundingClientRect();return (cx-r.left)/r.width*vb.width}
+function apply(){var s=1/(b-a);zoomG.forEach(function(z){z.setAttribute('transform',a===0&&b===1?'':'translate('+(padL-s*(padL+a*W))+',0) scale('+s+',1)')});
+fixed.forEach(function(e){var f=+e.getAttribute('data-f'),x=padL+(f-a)/(b-a)*W;e.style.visibility=(f>=a-1e-9&&f<=b+1e-9&&(e.tagName==='circle'||x<=padL+W-56))?'':'hidden';if(e.tagName==='circle')e.setAttribute('cx',x);else e.setAttribute('x',x+(+e.getAttribute('data-dx')||0))});
+ticks.forEach(function(e){if(e.parentNode)e.parentNode.removeChild(e)});ticks=[];
+var span=T*(b-a),step=span>25?5:span>10?2:1,ya=new Date(t0+a*(t1-t0)).getUTCFullYear();
+for(var y=ya;y<=new Date(t0+b*(t1-t0)).getUTCFullYear();y++){if(y%step)continue;var f=(Date.UTC(y,0,1)-t0)/(t1-t0),x=padL+(f-a)/(b-a)*W;if(x<padL+8||x>padL+W-8)continue;
+var tx=document.createElementNS(NS,'text');tx.setAttribute('x',x);tx.setAttribute('y',vb.height-5);tx.setAttribute('text-anchor','middle');tx.setAttribute('class','axis ytick');tx.textContent=y;svg.insertBefore(tx,svg.querySelector('.zoom').parentNode);ticks.push(tx)}
+btns.forEach(function(x){var y=+x.getAttribute('data-y'),want=y?Math.min(1,y/T):1,on=b>=1-1e-6&&Math.abs((b-a)-want)<1e-3;x.classList.toggle('on',on);x.setAttribute('aria-pressed',on?'true':'false')})}
+function setRange(na,nb){var sp=Math.min(1,Math.max(Math.min(1,1/T),nb-na));if(na<0)na=0;if(na+sp>1)na=1-sp;a=na;b=na+sp;g.style.display='none';tip.style.display='none';apply()}
+function zoomAt(cx,factor){var f=a+Math.min(1,Math.max(0,(svgX(cx)-padL)/W))*(b-a),sp=(b-a)*factor;setRange(f-(f-a)/(b-a)*sp,f-(f-a)/(b-a)*sp+sp)}
+function hover(e){var x=svgX(e.clientX),cf=a+Math.min(1,Math.max(0,(x-padL)/W))*(b-a),i=-1,best=9;for(var k=0;k<n;k++){if(fr[k]<a-1e-9||fr[k]>b+1e-9)continue;var dd=Math.abs(fr[k]-cf);if(dd<best){best=dd;i=k}}if(i<0)return;var p=data[i];
+var px=padL+(fr[i]-a)/(b-a)*W,py=padT+(2.2-p[1])/4.4*plotH;vl.setAttribute('x1',px);vl.setAttribute('x2',px);dot.setAttribute('cx',px);dot.setAttribute('cy',py);g.style.display='';
+var view=body.getAttribute('data-mview'),on=!body.classList.contains('nomkt'),mv=mval(view,p[0]),sc=scale(view),extra='';if(md)md.style.display='none';
+if(mv&&on&&sc){if(view==='fwd'&&Date.parse(p[0])-Date.parse(mv[0])>4.4e8)extra=' · S&P 500 next year: not known yet';else{extra=' · S&P 500 '+txt(view,mv[1])+(mv[0]<p[0]?' ('+mv[0].slice(0,10)+')':'');if(md){md.style.display='';var t=view==='px'?Math.log(mv[1]):mv[1];md.setAttribute('cx',px);md.setAttribute('cy',padT+(sc[1]-t)/(sc[1]-sc[0])*plotH)}}}
+tip.style.display='block';tip.style.left=Math.min(window.innerWidth-230,e.clientX+12)+'px';tip.style.top=(e.clientY-36)+'px';tip.textContent=p[0].slice(0,7)+': '+word(p[1])+' ('+(p[1]>0?'+':'')+p[1].toFixed(1)+')'+extra}
+var ptrs={},drag=null,pinch=null;
+function pair(){var k=Object.keys(ptrs);return k.length===2?[ptrs[k[0]],ptrs[k[1]]]:null}
+svg.addEventListener('pointerdown',function(e){if(e.pointerType==='mouse'&&e.button!==0)return;ptrs[e.pointerId]={x:e.clientX};var pr=pair();if(pr){var cx=(pr[0].x+pr[1].x)/2;pinch={d:Math.max(20,Math.abs(pr[0].x-pr[1].x)),f:a+Math.min(1,Math.max(0,(svgX(cx)-padL)/W))*(b-a),sp:b-a};drag=null}else drag={x:e.clientX,a:a,b:b,moved:false}});
+svg.addEventListener('pointermove',function(e){if(e.pointerType==='mouse'&&!e.buttons){delete ptrs[e.pointerId];drag=null;pinch=null}if(ptrs[e.pointerId])ptrs[e.pointerId].x=e.clientX;var pr=pair();
+if(pinch&&pr){var cx=(pr[0].x+pr[1].x)/2,sp=pinch.sp*pinch.d/Math.max(20,Math.abs(pr[0].x-pr[1].x)),na=pinch.f-Math.min(1,Math.max(0,(svgX(cx)-padL)/W))*sp;setRange(na,na+sp);return}
+if(drag&&b-a<1){var dx=(e.clientX-drag.x)/svg.getBoundingClientRect().width*vb.width;if(drag.moved||Math.abs(dx)>4){if(!drag.moved){drag.moved=true;try{svg.setPointerCapture(e.pointerId)}catch(x){}}var d=-dx/W*(drag.b-drag.a);setRange(drag.a+d,drag.b+d);return}}
+if(!pinch)hover(e)});
+function up(e){delete ptrs[e.pointerId];if(Object.keys(ptrs).length<2)pinch=null;if(!Object.keys(ptrs).length)drag=null}
+svg.addEventListener('pointerup',up);svg.addEventListener('pointercancel',up);svg.addEventListener('pointerleave',function(e){up(e);g.style.display='none';tip.style.display='none'});
+svg.addEventListener('wheel',function(e){if(e.ctrlKey||e.metaKey){e.preventDefault();var dy=e.deltaY*(e.deltaMode===1?33:e.deltaMode===2?400:1);zoomAt(e.clientX,Math.exp(Math.max(-60,Math.min(60,dy))*0.01))}else if(b-a<1&&Math.abs(e.deltaX)>Math.abs(e.deltaY)){e.preventDefault();var d=e.deltaX/svg.getBoundingClientRect().width*vb.width/W*(b-a);setRange(a+d,b+d)}},{passive:false});
+svg.addEventListener('dblclick',function(){setRange(0,1)});apply()}})();
 """
 
 

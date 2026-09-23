@@ -915,7 +915,7 @@ def test_market_has_three_views_monthly_since_history_start_ending_on_the_latest
     px = _daily_prices()
     monkeypatch.setattr(summary, "fetch_yahoo_daily", lambda s: px)
     m = summary._market()
-    assert m["name"].startswith("S&P 500") and set(m) == {"name", "points", "yoy", "dd"}
+    assert m["name"].startswith("S&P 500") and set(m) == {"name", "points", "yoy", "fwd", "dd"}
     for key in ("points", "yoy", "dd"):
         dates = [p[0] for p in m[key]]
         assert dates[0] >= "1995-01-01" and dates == sorted(dates) and len(set(dates)) == len(dates)
@@ -977,7 +977,7 @@ def _polyline(svg, cls):
 def test_layer_shares_the_plot_area_and_x_axis_with_the_gauge():
     hist = _hist()
     svg = server.svg_history(hist, [["2001-04-01", "2001-11-30"]], "x", _mk_market())
-    gauge_last_x = re.findall(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5"', svg)[0]
+    gauge_last_x = re.findall(r'<circle class="zpt"[^>]*? cx="([\d.]+)" cy="[\d.]+" r="5"', svg)[0]
     for view in ("yoy", "dd", "px"):
         pts = _polyline(svg, view)
         assert pts[-1].split(",")[0] == gauge_last_x and pts[0].split(",")[0] == "60.0"        # same start (left pad) and same last date x
@@ -989,12 +989,12 @@ def test_layer_shares_the_plot_area_and_x_axis_with_the_gauge():
 def test_views_use_the_right_scales_and_ticks():
     hist = _hist()
     svg = server.svg_history(hist, [], "x", _mk_market())
-    px = re.search(r'mv-px">(.*?)</g>', svg, re.S).group(1)
+    px = re.search(r'mv-px mtick">(.*?)</g>', svg, re.S).group(1)
     assert ">1,000<" in px and ">10,000<" in px and ">500<" not in px                          # log price ticks, inside the range only
-    yoy = re.search(r'mv-yoy">(.*?)</g>', svg, re.S).group(1)
+    yoy = re.search(r'mv-yoy mtick">(.*?)</g>', svg, re.S).group(1)
     assert ">0%<" in yoy and ">+20%<" in yoy and ">+10%<" not in yoy                            # a wide range gets 20-point steps
     assert "\u2212" in yoy                                                                    # a proper minus sign for negatives
-    dd = re.search(r'mv-dd">(.*?)</g>', svg, re.S).group(1)
+    dd = re.search(r'mv-dd mtick">(.*?)</g>', svg, re.S).group(1)
     assert ">0%<" in dd and "\u2212" in dd and "+" not in re.sub(r"<[^>]+>", "", dd)          # drop-from-high has no positive labels
     # log scale: equal percentage moves are equal distances
     m = dict(points=[["1995-01-31", 600.0], ["2005-01-31", 1200.0], ["2015-01-31", 2400.0], ["2025-01-31", 4800.0]])
@@ -1016,13 +1016,13 @@ def test_legend_switch_toggle_and_honest_caption_appear_only_with_data():
     assert "This gauge (left scale: Cold to Hot)" in block
     only = server.chart_pair(hist, [], "u2", dict(name="x", dd=_mk_market()["dd"]))
     assert only.count("mview-box") == 1 and 'value="dd" checked' in only and "mv-yoy" not in only    # a missing view is simply not offered
-    assert server.chart_pair(hist, [], "u3", None) == server.svg_history(hist, [], "u3")
+    assert server.chart_pair(hist, [], "u3", None) == server.svg_history(hist, [], "u3") + server.zoom_controls("u3")
 
 
 def test_layer_degrades_gracefully_and_caps_huge_series(monkeypatch):
     hist = _hist(24, "2020-01-31")
     for junk in (None, "junk", 5, [1, 2], {"yoy": "x"}, {"yoy": [[1]]}, {"yoy": None, "dd": [["nope", 1.0]]}):
-        assert server.chart_pair(hist, [], "x", junk) == server.svg_history(hist, [], "x")
+        assert server.chart_pair(hist, [], "x", junk) == server.svg_history(hist, [], "x") + server.zoom_controls("x")
     bad = dict(yoy=[["nope", 1.0], [None, 2.0], ["2020-03-31"], ["2020-04-30", "abc"], ["2020-05-31", float("nan")], ["2020-06-30", float("inf")],
                     ["2020-07-31", 5.0], ["2020-08-31", 7.0], ["2019-01-31", 9.0], ["2030-01-31", 9.0]])
     assert len(_polyline(server.svg_history(hist, [], "x", bad), "yoy")) == 2                    # only the two valid in-range points are drawn
@@ -1032,7 +1032,7 @@ def test_layer_degrades_gracefully_and_caps_huge_series(monkeypatch):
     n = len(_polyline(server.svg_history(_hist(), [], "u", huge), "yoy"))
     assert 100 < n <= server.MAX_MARKET_POINTS
     monkeypatch.setattr(server, "svg_history", mock.Mock(side_effect=[RuntimeError("boom"), "PLAIN"]))
-    assert server.chart_pair(hist, [], "u", _mk_market()) == "PLAIN"                              # any failure falls back to the plain chart
+    assert server.chart_pair(hist, [], "u", _mk_market()) == "PLAIN" + server.zoom_controls("u")                              # any failure falls back to the plain chart
 
 
 def test_escaping_and_the_shared_data_tag():
@@ -1076,7 +1076,7 @@ def test_default_view_follows_the_data_and_controls_need_script():
     assert server.default_view(dict(dd=m["dd"], points=m["points"])) == "dd" and server.default_view(None) == "yoy" and server.default_view("x") == "yoy"
     page = server.render({**json.loads(json.dumps(real_summary())), "market": dict(name="x", points=m["points"])}, "now", None)
     assert 'data-mview="px"' in page and page.count('value="px" checked') == 9                    # the checked radio and the body agree
-    assert ".nojs .mctl{display:none}" in server.CSS and "classList.remove('nojs')" in server.js_source()
+    assert ".nojs .mctl,.nojs .zctl{display:none}" in server.CSS and "classList.remove('nojs')" in server.js_source()
 
 
 def test_controls_hide_with_the_layer_and_are_labelled():
@@ -1118,7 +1118,7 @@ def test_the_last_partial_month_is_drawn_to_the_right_edge_and_the_next_month_is
     m = dict(yoy=[["1995-01-31", 1.0], ["2026-08-31", 2.0], ["2026-09-30", 3.0], ["2026-10-31", 4.0]])
     svg = server.svg_history(hist, [], "u", m)
     pts = _polyline(svg, "yoy")
-    assert len(pts) == 3 and pts[-1].split(",")[0] == re.findall(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5"', svg)[0]   # 09-18 is clamped to the gauge's end
+    assert len(pts) == 3 and pts[-1].split(",")[0] == re.findall(r'<circle class="zpt"[^>]*? cx="([\d.]+)" cy="[\d.]+" r="5"', svg)[0]   # 09-18 is clamped to the gauge's end
 
 
 def test_thinning_keeps_the_first_and_last_points_and_spans_the_range():

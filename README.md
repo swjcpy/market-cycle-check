@@ -36,8 +36,13 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   serves the page and re-runs the build in the project venv every 6 hours.
 - Every gauge chart (and the headline chart) can layer the S&P 500 with dividends (what the SPY fund follows) as a thin grey line read
   on a right-hand scale, switchable between the past-year change (default), the drop from its previous high, and the price on a log
-  scale (the first two remove the long climb so booms and busts stand out). The two lines never share a scale, the caption says so,
-  and it never feeds a score. A checkbox hides it; choices are remembered in the browser.
+  scale (the first two remove the long climb so booms and busts stand out). A fourth view, "Next-year change (hindsight)", plots what
+  the market did over the 12 months AFTER each date, so its line stops a year ago; it is there to test by eye whether a reading led
+  the market, and the overlapping windows make it look smoother and more convincing than four big falls can support. The two lines
+  never share a scale, the caption says so, and it never feeds a score. A checkbox hides it; choices are remembered in the browser.
+- Charts zoom in time (range buttons All/20y/10y/5y/2y, pinch or Ctrl/Cmd + scroll, drag to move, double-click to reset). It is done
+  in the browser on the server-drawn SVG (a transform plus repositioned labels), so line thickness stays constant and without
+  JavaScript the chart simply shows everything.
 - Each gauge card says whether it moves before, with or after the stock market (`leadlag.py`): the correlation of the gauge with
   the S&P 500's past-year change is measured at lags of -24..+24 months, the 90% range of the peak lag comes from a block
   bootstrap, and where the market relationship is weak or unstable the same test is run against NBER recessions. Charts mark each

@@ -59,11 +59,13 @@ def test_turn_markers_draw_and_skip_bad_input():
     Y = lambda v: 50.0
     t = [{"market_peak": "2000-09-01", "market_trough": "2002-10-09",
           "peak": {"date": "2000-06", "offset": -3, "at_edge": False}, "trough": {"date": "2002-10", "offset": 0, "at_edge": True}}]
-    s = server._turn_markers(t, hist, X, Y, 10, 22, 220)
-    assert s.startswith('<g class="mlayer mturn">') and s.count("<line") == 2 and s.count("<circle") == 1   # edge extreme: no circle
-    assert server._turn_markers(None, hist, X, Y, 10, 22, 220) == ""
-    assert server._turn_markers([{"market_peak": "1990-01-01", "market_trough": "1991-01-01"}], hist, X, Y, 10, 22, 220) == ""   # outside chart range
-    assert server._turn_markers([{"market_peak": "junk", "market_trough": 5}, 7], hist, X, Y, 10, 22, 220) == ""
+    lines, pts = server._turn_markers(t, hist, X, Y, 10, 22, 220, lambda d: 0.25)
+    assert lines.startswith('<g class="mlayer mturn">') and lines.count("<line") == 2 and "<circle" not in lines and "<text" not in lines
+    assert pts.startswith('<g class="mlayer mturn-pt">') and pts.count("<circle") == 1 and pts.count("<text") == 2      # edge extreme: no circle
+    assert pts.count('data-f="0.25000"') == 3 and pts.count('data-dx="3"') == 2                                       # the script repositions these
+    assert 'vector-effect="non-scaling-stroke"' in lines
+    for bad in (None, [{"market_peak": "1990-01-01", "market_trough": "1991-01-01"}], [{"market_peak": "junk", "market_trough": 5}, 7]):
+        assert server._turn_markers(bad, hist, X, Y, 10, 22, 220) == ("", "")                                       # none / outside chart range / junk
 
 
 def _synthetic():

@@ -216,9 +216,9 @@ def _rate_notice(today: pd.Timestamp | None = None) -> dict | None:
 
 
 def _market() -> dict | None:
-    """The S&P 500 total-return index (what the SPY fund tracks) as three views for the layer on each chart, month-end since
-    1995 plus the latest day: the price, the change over the past year, and the drop from its previous high. The last two remove
-    the long climb so booms and busts are visible. Context only: never used to score anything. None if the data is unavailable."""
+    """The S&P 500 total-return index (what the SPY fund tracks) as four views for the layer on each chart, month-end since
+    1995 plus the latest day: the price, the change over the past year, the change over the NEXT year (hindsight: it ends a year
+    ago), and the drop from its previous high. The percent views remove the long climb so booms and busts are visible. Context only: never used to score anything. None if the data is unavailable."""
     try:
         daily = fetch_yahoo_daily("^SP500TR")
     except Exception:  # noqa: BLE001
@@ -226,13 +226,18 @@ def _market() -> dict | None:
     if len(daily) < 400:
         return None
     year_ago = pd.Series(daily.asof(daily.index - pd.Timedelta(days=365)).to_numpy(), index=daily.index)   # last close on/before a year earlier
-    frames = {"points": daily, "yoy": (daily / year_ago - 1) * 100, "dd": (daily / daily.cummax() - 1) * 100}   # drop vs the all-time high so far
+    later = daily.index + pd.Timedelta(days=365)
+    year_on = pd.Series(daily.asof(later).to_numpy(), index=daily.index)      # last close on/before a year LATER (hindsight)
+    fwd = ((year_on / daily - 1) * 100).where(later <= daily.index[-1])       # beyond the last close the future is unknown: never filled
+    frames = {"points": daily, "yoy": (daily / year_ago - 1) * 100, "fwd": fwd, "dd": (daily / daily.cummax() - 1) * 100}   # dd: drop vs the all-time high so far
     out = {"name": "S&P 500, dividends included"}
     for key, ser in frames.items():
         ser = ser.dropna()
         ser = ser[ser.index >= HISTORY_FROM]
         monthly = ser.resample("ME").last() if len(ser) else ser
         if len(monthly) < 24:                              # under two years of data: not worth a layer
+            if key == "fwd":                               # the hindsight view has a year less: just leave it out
+                continue
             return None
         monthly = monthly.iloc[:-1] if monthly.index[-1] > ser.index[-1] else monthly    # the open month is replaced by the latest day
         pts = [[d.strftime("%Y-%m-%d"), round(float(v), 1)] for d, v in monthly.items()]

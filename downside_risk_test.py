@@ -177,14 +177,14 @@ def lit_runs(lit: pd.Series, gap: int = 4) -> list:
     return runs
 
 
-def episodes(px: pd.Series, start: str = START) -> list:
-    """10% falls (peak, date the close first reached -10% from the peak, trough, depth) whose peak is after `start`."""
+def episodes(px: pd.Series, start: str = START, depth: float = 0.10) -> list:
+    """Falls of `depth` or more (peak, date the close first reached that fall from the peak, trough, depth) whose peak is after `start`."""
     out = []
-    for pk, tr, drop in leadlag.bear_markets(px, 0.10):
+    for pk, tr, drop in leadlag.bear_markets(px, depth):
         if pk < pd.Timestamp(start):
             continue
         seg = px.loc[pk:tr]
-        cross = seg.index[(seg <= 0.9 * px.loc[pk]).to_numpy().argmax()]
+        cross = seg.index[(seg <= (1 - depth) * px.loc[pk]).to_numpy().argmax()]
         out.append((pk, cross, tr, drop))
     return out
 
@@ -219,21 +219,21 @@ NAMES = {"S1": "below 200-day avg", "S2": ">=5% below 52w high", "V1": "realised
          "K2": "2+ of 9 lit", "K3": "3+ of 9 lit", "K4": "4+ of 9 lit"}
 
 
-def main() -> None:
+def main(fall: float = FALL) -> None:
     inp = load_inputs()
     px = inp["px"]
     fl_all = flags(px, inp["vix"], inp["baa"], inp["t10y3m"], inp["dff"], inp["nfci"], inp["credit"], inp["head"])
-    y_all = fall_target(px)
+    y_all = fall_target(px, fall=fall)
     pos = {t: i for i, t in enumerate(px.index)}
     grid = weekly(px.index)
     grid = grid[(grid >= pd.Timestamp(START))]
     ok = y_all.reindex(grid).notna() & fl_all.reindex(grid).notna().all(axis=1)
     grid = grid[ok.to_numpy()]
     y = y_all.loc[grid]
-    eps = episodes(px)
-    lines = [f"Downside-risk test: S&P 500 (total return) closes {abs(FALL):.0%}+ below today's close within {HORIZON} trading days. "
+    eps = episodes(px, depth=abs(fall))
+    lines = [f"Downside-risk test: S&P 500 (total return) closes {abs(fall):.0%}+ below today's close within {HORIZON} trading days. "
              f"Samples: {len(grid)} weeks, {grid[0]:%Y-%m-%d} to {grid[-1]:%Y-%m-%d}; base rate on all of them {y.mean():.1%}.",
-             f"{len(eps)} falls of 10% or more began after {START[:4]}: " + "; ".join(f"{pk:%Y-%m}" + f" ({dr:.0%})" for pk, _, _, dr in eps), ""]
+             f"{len(eps)} falls of {abs(fall):.0%} or more began after {START[:4]}: " + "; ".join(f"{pk:%Y-%m}" + f" ({dr:.0%})" for pk, _, _, dr in eps), ""]
     lines.append(f"{'indicator':28s} {'lit':>5s} {'P(fall|lit)':>11s} {'P(fall|off)':>11s} {'lift':>5s} {'lo90':>5s} {'strict':>6s} {'1st half':>8s} {'2nd half':>8s} {'skill':>6s}"
                  f" {'recall':>6s} {'FA/yr':>5s} {'falls warned':>12s}  PASS")
     passed = []
@@ -255,7 +255,7 @@ def main() -> None:
                      f"{'PASS' if p else '-'}")
         detail.append((k, w))
     lines += ["", f"Passed all four parts of the bar: {', '.join(passed) if passed else 'none'}.  (Tests run: {len(NAMES)}; 'strict' = lower bound at one-sided {0.05 / N_TESTS:.2%}.)", "",
-              "Episode timeline: for each 10% fall, was the indicator lit at least once in the 63 trading days before the close reached -10%, and how many trading days before?",
+              f"Episode timeline: for each {abs(fall):.0%} fall, was the indicator lit at least once in the 63 trading days before the close reached -{abs(fall):.0%}, and how many trading days before?",
               f"{'fall':22s} " + " ".join(f"{k:>5s}" for k in NAMES)]
     for e_i, (pk, cross, tr, dr) in enumerate(eps):
         cells = []
@@ -266,9 +266,10 @@ def main() -> None:
     lines += ["", "Reading guide: 'lift' = P(fall | lit) / base rate. 'FA/yr' = separate lit stretches per year with no 10% fall in the following 63 days. There are few independent "
               "falls, so ranges are wide; several indicators are lit for long stretches, which makes lit-vs-off comparisons overlap. Nothing here was tuned on these results."]
     text = "\n".join(lines)
-    (CACHE_DIR / "downside_risk_test.txt").write_text(text)
+    (CACHE_DIR / ("downside_risk_test.txt" if abs(fall) == abs(FALL) else f"downside_risk_test_{abs(fall):.0%}.txt".replace("%", ""))).write_text(text)
     print(text)
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main(-abs(float(sys.argv[1]))) if len(sys.argv) > 1 else main()

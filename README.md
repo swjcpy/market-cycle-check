@@ -58,6 +58,9 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   confirmed and how far the gauge has moved since; the chart marks confirmed highs and lows with small triangles (small swings only
   appear when you zoom in; a checkbox hides them). 0.4 was chosen from how often it fires and how fast, not fitted to market returns.
   Descriptive only: nothing here predicts a turn in the market, and noisy gauges (investor mood) turn every few months.
+- The headline and investor-mood cards say how closely the gauge moves with the S&P 500 (correlation with the past-year change and
+  month to month, completed months only) and why: investor mood is built mostly from stock prices (VIX, S&P vs its 10-year trend, CAPE),
+  so it partly repeats the market. Descriptive; it does not mean the gauge predicts the market.
 - `validate.py <cycle>` tests a cycle against forward S&P 500 returns (`data/validation_<cycle>.txt`).
 
 ## Weights

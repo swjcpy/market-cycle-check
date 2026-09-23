@@ -1,0 +1,101 @@
+"""The 'how much of this is just the stock market?' note."""
+import json
+import math
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import server  # noqa: E402
+import summary  # noqa: E402
+
+
+def _daily(n_days=9000, seed=0, end="2026-09-18"):
+    idx = pd.bdate_range(end=end, periods=n_days)
+    rng = np.random.default_rng(seed)
+    return pd.Series(100 * np.exp(np.cumsum(rng.normal(0.0003, 0.01, len(idx)))), index=idx)
+
+
+def _score_from(daily, noise=0.0, seed=1):
+    """A gauge that is (a scaled copy of) the S&P's past-year change plus noise, month-end labelled."""
+    sp = daily.resample("ME").last()
+    yoy = ((sp / sp.shift(12) - 1) * 100).dropna()
+    rng = np.random.default_rng(seed)
+    return (yoy / yoy.abs().max() * 2 + rng.normal(0, noise, len(yoy))).clip(-2, 2)
+
+
+def test_market_link_is_high_for_a_gauge_built_from_the_market_and_near_zero_for_noise():
+    daily = _daily()
+    link = summary._market_link(_score_from(daily), daily)
+    assert link["level"] > 0.95 and link["months"] > 200 and link["since"] <= 1995
+    rng = np.random.default_rng(5)
+    noise = pd.Series(rng.normal(0, 1, 300), index=pd.date_range("1995-01-31", periods=300, freq="ME"))
+    n = summary._market_link(noise, daily)
+    assert abs(n["level"]) < 0.3 and abs(n["monthly"]) < 0.3
+    inv = summary._market_link(-_score_from(daily), daily)
+    assert inv["level"] < -0.95                                                                       # the sign is kept
+
+
+def test_market_link_uses_completed_months_only_and_is_none_without_data():
+    daily = _daily(end="2026-09-18")
+    sc = _score_from(daily)
+    partial = pd.concat([sc, pd.Series([9.0], index=[pd.Timestamp("2026-09-12")])])                  # a provisional last row with a wild value
+    assert summary._market_link(partial, daily) == summary._market_link(sc.loc[:"2026-08-31"], daily)
+    assert summary._market_link(sc, None) is None and summary._market_link(sc.iloc[:50], daily) is None
+    assert summary._market_link("junk", daily) is None and summary._market_link(sc * float("nan"), daily) is None
+
+
+def _link(level=0.68, monthly=0.60, since=1990):
+    return dict(level=level, monthly=monthly, since=since, months=380)
+
+
+def test_note_wording_and_only_the_price_built_gauges_get_it():
+    h = server.market_link_html(_link(), "headline")
+    assert h.startswith('<p class="marketlink"><b>How much of this is just the stock market?</b> Since 1990,')
+    assert "correlation of +0.68 (+1 means they always rise and fall together, 0 means no link). Month to month the correlation is +0.60." in h
+    assert "investor mood is mostly made from stock prices" in h and h.endswith("It does not mean the gauge predicts the market.</p>")
+    p = server.market_link_html(_link(-0.15, 0.02), "psychology")
+    assert "correlation of -0.15" in p and "Three of its four readings come from stock prices or price swings" in p and "VIX" in p
+    for key in ("credit", "economy", "policy", "profits", "realestate", "bonds", "distressed", "nope"):
+        assert server.market_link_html(_link(), key) == ""
+
+
+def test_note_is_empty_for_malformed_data_and_is_escaped():
+    for bad in (None, "x", 5, {}, _link(level="a"), _link(level=float("nan")), _link(monthly=math.inf), _link(since="x"), {"level": 0.1}):
+        assert server.market_link_html(bad, "headline") == ""
+    assert "correlation of +0.10" in server.market_link_html(_link(level="0.1"), "headline")           # a numeric string is fine
+
+
+def test_the_note_appears_on_the_headline_and_investor_mood_only():
+    p = Path(__file__).parent.parent / "data" / "summary.json"
+    if not p.exists() or "market_link" not in json.loads(p.read_text())["headline"]:
+        pytest.skip("no built summary.json with the link (run summary.py --write)")
+    s = json.loads(p.read_text())
+    assert server.render(s, "now", None).count('class="marketlink"') == 2
+    no = json.loads(p.read_text())
+    no["headline"]["market_link"] = None
+    no["cycles"][0]["market_link"] = "junk"
+    assert server.render(no, "now", None).count('class="marketlink"') == 0
+    assert all(c["market_link"] is None for c in s["cycles"] if c["key"] != "psychology")
+
+
+def test_a_flat_gauge_has_no_link_and_raises_no_warning():
+    import warnings
+    daily = _daily()
+    flat = pd.Series(0.5, index=pd.date_range("1995-01-31", periods=300, freq="ME"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert summary._market_link(flat, daily) is None
+
+
+def test_month_to_month_link_compares_the_same_month():
+    daily = _daily()
+    sp = daily.resample("ME").last()
+    sc = (sp.pct_change() * 100).dropna().cumsum() / 200                                   # a gauge whose monthly change IS the market's monthly return
+    link = summary._market_link(sc, daily)
+    assert link["monthly"] > 0.99
+    lagged = summary._market_link(sc.shift(1).dropna(), daily)                              # ... one month late: no longer the same month
+    assert abs(lagged["monthly"]) < 0.3

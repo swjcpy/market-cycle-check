@@ -156,6 +156,28 @@ def _leadlag(key: str, df: pd.DataFrame, daily: pd.Series | None) -> dict | None
     return r
 
 
+def _market_link(score: pd.Series, daily: pd.Series | None) -> dict | None:
+    """How closely a gauge moves with the S&P 500 (total return): the correlation of its month-end score with the market's past-year change,
+    and of its month-to-month change with the market's monthly return. Completed months only. Descriptive; None if unavailable."""
+    if daily is None:
+        return None
+    try:
+        s = _monthly(score.dropna())
+        s.index = s.index.to_timestamp("M")
+        sp = daily.resample("ME").last()
+        sp = sp.iloc[:-1] if daily.index[-1] < daily.index[-1] + pd.offsets.BMonthEnd(0) else sp    # the month still in progress is left out
+        s = s[s.index <= sp.index[-1]]
+        lvl = pd.concat([s.rename("s"), ((sp / sp.shift(12) - 1) * 100).rename("m")], axis=1, sort=True).dropna()
+        chg = pd.concat([s.diff().rename("s"), (sp.pct_change() * 100).rename("m")], axis=1, sort=True).dropna()
+        if len(lvl) < 96 or len(chg) < 96 or min(lvl['s'].std(), lvl['m'].std(), chg['s'].std(), chg['m'].std()) == 0:
+            return None                                                            # too short, or a flat series (no correlation exists)
+        out = dict(level=_clean(round(float(lvl["s"].corr(lvl["m"])), 2)), monthly=_clean(round(float(chg["s"].corr(chg["m"])), 2)),
+                   since=lvl.index[0].year, months=len(lvl))
+        return out if out["level"] is not None and out["monthly"] is not None else None
+    except Exception:  # noqa: BLE001  optional context: never break the page's numbers
+        return None
+
+
 def _reversal(s: pd.Series, partial: bool = False) -> dict | None:
     """Direction changes of a gauge (see reversals.py), for the note on its card and the markers on its chart. None if unavailable.
     A month still in progress is left out (a provisional reading could confirm a turn that then vanishes); a turn whose extreme is the
@@ -431,6 +453,7 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
             direction_word={"up": info["up"], "down": info["down"], "steady": "steady"}[direction(chg)], as_of=s.index[-1].strftime("%Y-%m-%d") if len(s) else None,
             is_partial=bool(df["is_partial"].iloc[-1]),
             indicators=_indicators(key, df), leadlag=_leadlag(key, df, daily_sp), reversal=_reversal(s, bool(df["is_partial"].iloc[-1])),
+            market_link=_market_link(s, daily_sp) if key == "psychology" else None,
             history=[[d.strftime("%Y-%m-%d"), round(float(v), 2)] for d, v in hist.items()],
             recessions=_spans(df["recession"].loc[HISTORY_FROM:]) if "recession" in df else [],
             you=info["hot_you"] if b in ("hot", "warm") else info["cold_you"] if b in ("cool", "cold") else None,
@@ -451,7 +474,7 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
                     stage=stage_label, stage_display=_mild(stage_label, hb), drivers=drivers, not_a_signal=plain.NOT_A_SIGNAL,
                     stage_text=stage_sentence, as_of=h.index[-1].strftime("%Y-%m-%d"),
                     history=[[d.strftime("%Y-%m-%d"), round(float(v), 2)] for d, v in h.loc[HISTORY_FROM:].items()],
-                    recessions=cycles[0]["recessions"], track=record, reversal=_reversal(h, any(c["is_partial"] for c in cycles if c["key"] in HEADLINE_CYCLES)), **plain.HEADLINE[hb])
+                    recessions=cycles[0]["recessions"], track=record, market_link=_market_link(h, daily_sp), reversal=_reversal(h, any(c["is_partial"] for c in cycles if c["key"] in HEADLINE_CYCLES)), **plain.HEADLINE[hb])
     notices = [n for n in (_rate_notice(),) if n]
     for c in cycles:
         c["notice"] = next((n["text"] for n in notices if n["key"] == c["key"]), None)

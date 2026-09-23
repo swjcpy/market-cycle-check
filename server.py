@@ -499,6 +499,27 @@ def reversal_html(r) -> str:
     return f'<p class="reversal"><b>Direction changes:</b> {esc(note)}</p>' if note else ""
 
 
+PRICE_BASED = {"headline": "It combines the lending and investor-mood gauges, and investor mood is mostly made from stock prices (see below), so it partly repeats the market.",
+               "psychology": "Three of its four readings come from stock prices or price swings (the VIX fear index, the S&P 500 against its 10-year trend, and the market's "
+                             "price-to-earnings ratio), so it partly repeats the market."}
+
+
+def market_link_html(link, key: str) -> str:
+    """'How much of this is just the stock market?': how closely the gauge moves with the S&P 500, and why. Only for the gauges built from prices."""
+    if key not in PRICE_BASED or not isinstance(link, dict):
+        return ""
+    try:
+        lvl, mon, since = float(link["level"]), float(link["monthly"]), int(link["since"])
+        if not (math.isfinite(lvl) and math.isfinite(mon)):
+            return ""
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return ""
+    text = (f"Since {since}, this gauge and the S&P 500's change over the past year have moved together with a correlation of {lvl:+.2f} "
+            f"(+1 means they always rise and fall together, 0 means no link). Month to month the correlation is {mon:+.2f}. {PRICE_BASED[key]} "
+            "It does not mean the gauge predicts the market.")
+    return f'<p class="marketlink"><b>How much of this is just the stock market?</b> {esc(text)}</p>'
+
+
 def notice_html(c: dict) -> str:
     return f'<p class="limit"><b>Recent change.</b> {esc(str(c["notice"]))}</p>' if c.get("notice") else ""
 
@@ -557,7 +578,7 @@ def render_card(c: dict, market: dict | None = None) -> str:
       <div class="ch"><span class="ic">{esc(c["icon"])}</span><div><h3>{esc(c["title"])}</h3><div class="ask">{esc(c["asks"])}</div></div></div>
       <div class="cs">{pill(c["band"], c["band_word"])} <span class="stage">{ARROW_ICON[c["direction"]]} {esc(c["direction_word"])}</span></div>
       {thermometer(c["score"])}
-      <p class="mean">{esc(mean)}</p>{timing_line(c)}{reversal_html(c.get("reversal"))}
+      <p class="mean">{esc(mean)}</p>{timing_line(c)}{reversal_html(c.get("reversal"))}{market_link_html(c.get("market_link"), c["key"])}
       <span class="more">Tap for details</span>
     </summary>
     <div class="detail">
@@ -651,7 +672,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
   <h2>{esc(h["title"])}</h2>
   {thermometer(h["score"], big=True)}
   <p class="lead">{esc(h["summary"])}</p>
-  <p class="sub">{esc(h["stage_text"])}</p>{reversal_html(h.get("reversal"))}
+  <p class="sub">{esc(h["stage_text"])}</p>{reversal_html(h.get("reversal"))}{market_link_html(h.get("market_link"), "headline")}
   <p class="drivers"><b>What is driving this:</b> {drivers}</p>
   <div class="cols"><div><h4>Sensible habits in any market</h4><ul>{do}</ul></div><div><h4>What to be careful about</h4><ul>{avoid}</ul></div></div>
   <p class="sub"><b>{esc(h["not_a_signal"])}</b> Past readings of these gauges did not reliably predict what stocks did next.</p>

@@ -32,16 +32,19 @@ def test_a_light_on_briefly_is_only_watch_and_a_credit_light_alone_is_never_wors
     assert set(r["states"]) == {"watch"} and r["episodes"] == []                                        # credit alone: 300 days of watch, never worse
 
 
-def test_the_trend_light_on_42_days_makes_it_worse_and_it_ends_after_3_quiet_days():
-    tr, cr = _lights([(0, 0, 5), (1, 0, 50), (0, 0, 2), (0, 0, 1), (0, 0, 70)])
+def test_the_trend_light_alone_is_never_worse_however_long_it_lasts():
+    r = d.run_states(*_lights([(1, 0, 400)]))
+    assert set(r["states"]) == {"watch"} and r["episodes"] == [] and r["trend_run"][-1] == 400
+
+
+def test_both_lights_on_starts_worse_and_it_ends_after_3_quiet_days():
+    tr, cr = _lights([(0, 0, 5), (1, 1, 3), (1, 0, 50), (0, 0, 2), (0, 0, 1), (0, 0, 70)])
     r = d.run_states(tr, cr)
     s = r["states"]
-    assert s[5 + 40] == "watch" and s[5 + 41] == "worse"                                                   # the 42nd day on is the first Worse day
-    assert set(s[5 + 41: 5 + 50 + 2]) == {"worse"}                                                       # it stays Worse while the light goes off, until 3 quiet days
-    assert s[5 + 50 + 1] == "worse" and s[5 + 50 + 2] == "recovering"                                     # the 3rd quiet day ends the Worse stretch
-    assert r["episodes"] == [(5 + 41, 5 + 50 + 2)]
-    end = 5 + 50 + 2
-    assert set(s[end: end + 64]) == {"recovering"} and s[end + 64] == "calm"                              # Recovering lasts 63 days after the end, then calm
+    assert set(s[:5]) == {"calm"} and s[5] == "worse"                                                     # the first day both are on
+    assert set(s[5:60]) == {"worse"}                                                                     # it stays Worse while only the trend light is on, and through 2 quiet days
+    assert s[59] == "worse" and s[60] == "recovering" and r["episodes"] == [(5, 60)]                     # the 3rd quiet day (index 60) ends it
+    assert set(s[60: 60 + 64]) == {"recovering"} and s[60 + 64] == "calm"                                 # Easing lasts 63 days after the end, then calm
     assert r["quiet_run"][-1] == 2 + 1 + 70 and s[-1] == "calm"
 
 
@@ -68,7 +71,7 @@ def test_recovering_is_replaced_by_watch_when_a_light_comes_back_and_the_start_i
 
 
 def test_parameters_are_the_agreed_ones():
-    assert (d.STATUS_TREND_DAYS, d.STATUS_QUIET_DAYS, d.STATUS_RECOVERING, d.STATUS_FROM) == (42, 3, 63, "1993-01-01")
+    assert (d.STATUS_QUIET_DAYS, d.STATUS_RECOVERING, d.STATUS_FROM) == (3, 63, "1993-01-01") and not hasattr(d, "STATUS_TREND_DAYS")
 
 
 # ---- status() on prices ------------------------------------------------------------------------------------------------------
@@ -82,6 +85,8 @@ def _market(n=4500, seed=1, worse_end=False, start="1993-01-04"):
         r[-90:] -= 0.004
     px = pd.Series(100 * np.exp(np.cumsum(r)), index=idx)
     baa = pd.Series(2.0 + rng.normal(0, 0.05, n), index=idx)
+    if worse_end:                                                                                        # credit stress at the end too: both lights on
+        baa.iloc[-60:] += np.linspace(0.3, 2.0, 60)
     return px, baa
 
 
@@ -96,7 +101,7 @@ def _independent(px, baa, cash_rate=0.0):
         both = both + 1 if (tr[i] and cr[i]) else 0
         quiet = quiet + 1 if not (tr[i] or cr[i]) else 0
         if i >= s0:
-            if not out and (trr >= 42 or both >= 1):
+            if not out and both >= 1:
                 out = True
             elif out and quiet >= 3:
                 out = False
@@ -123,14 +128,13 @@ def test_the_hypothetical_matches_an_independent_simulation_including_cash_and_a
     assert d.status(px, baa, cash=pd.Series(dtype=float))["cash"] == "zero"
 
 
-def test_episodes_say_what_started_them_and_days_worse_is_exact():
+def test_episodes_start_when_both_lights_are_on_and_days_worse_is_exact():
     px, baa = _market(worse_end=True)
     st = d.status(px, baa)
     tr, cr = d.s1(px).fillna(0).to_numpy(), d.c1(px, baa).fillna(0).to_numpy()
     for e in st["episodes"]:
         a = px.index.get_loc(pd.Timestamp(e["start"]))
-        assert e["trigger"] == ("both" if (tr[a] and cr[a]) else "trend")
-    assert {e["trigger"] for e in st["episodes"]} <= {"both", "trend"}
+        assert tr[a] and cr[a] and "trigger" not in e                                                     # every stretch begins on a day both lights are on
     assert st["state"] == "worse" and st["worse_days"] == len(px) - 1 - px.index.get_loc(pd.Timestamp(st["episodes"][-1]["start"]))
 
 
@@ -145,8 +149,8 @@ def test_a_missing_light_value_counts_as_off():
 def test_the_status_reports_the_days_on_and_the_current_state():
     px, baa = _market(worse_end=True)
     st = d.status(px, baa)
-    assert st["state"] == "worse" and st["trend_days"] >= 42 and st["worse_days"] > 0 and st["quiet_days"] == 0 and st["episodes"][-1]["end"] is None
-    assert st["params"] == dict(trend_days=42, quiet_days=3, recovering=63) and st["since"] == "1993-01" and st["cash"] == "zero"                    # (this synthetic history starts after STATUS_FROM)
+    assert st["state"] == "worse" and st["both_days"] >= 1 and st["trend_days"] >= 1 and st["worse_days"] > 0 and st["quiet_days"] == 0 and st["episodes"][-1]["end"] is None
+    assert st["params"] == dict(quiet_days=3, recovering=63) and st["since"] == "1993-01" and st["cash"] == "zero"                    # (this synthetic history starts after STATUS_FROM)
     calm = d.status(*_market())
     assert calm["state"] in ("calm", "recovering") and calm["trend_days"] == 0 and calm["worse_days"] == 0
 
@@ -173,7 +177,7 @@ def test_episodes_match_the_states_and_the_simulated_rule():
         both = both + 1 if (tr[i] and cr[i]) else 0
         quiet = quiet + 1 if not (tr[i] or cr[i]) else 0
         if i >= s0:
-            if not out and (trr >= 42 or both >= 1):
+            if not out and both >= 1:
                 out = True
             elif out and quiet >= 3:
                 out = False

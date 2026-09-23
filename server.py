@@ -723,7 +723,7 @@ def status_html(st, fall: str = "10%") -> str:
     try:
         state = st["state"]
         p = st["params"]
-        fmt = dict(trend_days=int(p["trend_days"]), quiet_days=int(p["quiet_days"]))
+        fmt = dict(quiet_days=int(p["quiet_days"]))
         name, meaning = plain.STATUS_NAMES[state], plain.STATUS_MEANING[state].format(**fmt)
         days = (f'Trend light on for {int(st["trend_days"])} trading day{"s" if int(st["trend_days"]) != 1 else ""} in a row; credit light on for {int(st["credit_days"])}; '
                 f'both on for {int(st["both_days"])}; no light on for {int(st["quiet_days"])}.')
@@ -754,12 +754,6 @@ def status_html(st, fall: str = "10%") -> str:
                             f'so a rebound was still ahead. ')
             if ends:
                 summary_bits += f'When they ended, the market was on average {sum(ends) / len(ends) * 100:.0f}% below its high (from {min(ends) * 100:.0f}% to {max(ends) * 100:.0f}%). '
-            n_trend = sum(1 for e in eps if e.get("trigger") == "trend")
-            n_both = sum(1 for e in eps if e.get("trigger") == "both")
-            if n_both + n_trend == n_ep:
-                td = int(p["trend_days"])
-                never = f"; the {td}-day trend clause has not started a stretch by itself in this history" if n_trend == 0 else ""
-                summary_bits += f"{n_both} began with both lights on and {n_trend} with the trend light on for {td} days on its own{never}."
             summary_bits += "</p>"
         bt = st.get("backtest") or {}
         hyp = ""

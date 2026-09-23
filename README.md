@@ -68,13 +68,13 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   half the falls); these two were the closest, so the card is framed as "risk has been higher when on", never as a forecast. The trend light
   mostly marks a decline already under way, and the credit light has not come on ahead of any fall since 2000 (in 2007 it came on about six weeks after the peak). All 14 tests are on the same 12 falls, so
   the ranges are wide; the on/off comparison by number of lights is exploratory and in-sample.
-- The card also shows a Calm / Watch / Worse / Recovering status from the two lights: Watch = a light is on; Worse starts when the trend
-  light has been on 42 trading days in a row or both lights are on, and ends once no light has been on for 3 trading days in a row;
-  Easing = the 3 months after a Worse stretch while no light is on. It lists every past Worse stretch (1993 on) and the hypothetical
-  result of selling when one starts and buying back when it ends (a signal at one close is filled at the next day's close; cash earns
-  the T-bill rate; no costs or taxes). The definitions and the 3-day buy-back were chosen from a handful of variants on 9 stretches, all 9 of which began with both
-  lights on (the 42-day trend clause never fired by itself), and most of the small edge in yearly return is interest on cash; the smaller
-  worst fall is the main effect and depends on a few stretches, so the card calls it an in-sample illustration, not a recommendation.
+- The card also shows a Calm / Watch / Worse / Easing status from the two lights: Watch = a light is on; Worse starts when BOTH lights are
+  on together and ends once no light has been on for 3 trading days in a row; Easing = the 3 months after a Worse stretch while no light is
+  on. It lists every past Worse stretch (1993 on) and the hypothetical result of selling when one starts and buying back when it ends (a
+  signal at one close is filled at the next day's close; cash earns the T-bill rate; no costs or taxes). A trend-light-only clause (on 42
+  days in a row) was tried and removed because it never started a stretch by itself. The 3-day buy-back was chosen from a handful of variants
+  on 9 stretches, and most of the small edge in yearly return is interest on cash; the smaller worst fall is the main effect and depends on a
+  few stretches, so the card calls it an in-sample illustration, not a recommendation.
 - `validate.py <cycle>` tests a cycle against forward S&P 500 returns (`data/validation_<cycle>.txt`).
 
 ## Weights

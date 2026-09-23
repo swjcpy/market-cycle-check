@@ -249,11 +249,11 @@ RISK_ACTIONS = ["If a light is on, check that what you own matches how large a f
 STATUS_NAMES = {"calm": "Calm", "watch": "Watch", "worse": "Worse", "recovering": "Easing"}
 STATUS_MEANING = {
     "calm": "No caution light is on.",
-    "watch": "A light is on, but it has not lasted long enough (or the two lights do not agree) to count as Worse. In the past many of these were short flickers.",
-    "worse": "This stretch began when the trend light had been on for {trend_days} trading days in a row, or when both lights were on together. It lasts until no light has been on for {quiet_days} trading days in a row.",
+    "watch": "One light is on, but the two lights are not both on, so it does not count as Worse. In the past many of these were short flickers.",
+    "worse": "This stretch began when both lights were on together. It lasts until no light has been on for {quiet_days} trading days in a row.",
     "recovering": "A Worse stretch ended within the last 3 months, after no light had been on for {quiet_days} trading days in a row, and none is on now. The market can still be well below its high.",
 }
-STATUS_RULES = ("How it works: Watch means a light is on. Worse starts when the trend light has been on {trend_days} trading days in a row, or when both lights are on together. "
+STATUS_RULES = ("How it works: Watch means a light is on. Worse starts when both lights are on together. "
                 "It ends once no light has been on for {quiet_days} trading days in a row, and the status then reads Easing for up to 3 months while no light is on. "
                 "These are our own definitions, chosen after looking at this same history (several settings were tried), so every result is in-sample. "
                 "The status is not a signal to trade.")

@@ -35,8 +35,7 @@ from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
 
 log = logging.getLogger(__name__)
 RECENT_FROM = "2010-01-01"   # the card also shows the record since the 2008-09 crisis, because the long bear markets dominate the full history
-STATUS_TREND_DAYS = 42     # "Worse": the trend light has been on this many trading days in a row (or both lights are on)
-STATUS_QUIET_DAYS = 3      # a Worse stretch ends once no light has been on for this many trading days in a row
+STATUS_QUIET_DAYS = 3      # "Worse" starts when both lights are on together; a Worse stretch ends once no light has been on for this many trading days in a row
 STATUS_RECOVERING = 63     # and the status reads "Recovering" for this many trading days afterwards, while no light is on
 STATUS_FROM = "1993-01-01"  # the credit light needs 5 years of its own history on the S&P 500 trading calendar, which starts in January 1988
 HORIZON = 63               # trading days
@@ -316,9 +315,9 @@ def run_lengths(a) -> np.ndarray:
     return out
 
 
-def run_states(trend, credit, start: int = 0, trend_days: int = STATUS_TREND_DAYS, quiet_days: int = STATUS_QUIET_DAYS, recovering: int = STATUS_RECOVERING) -> dict:
-    """The daily status from the two lights (arrays of 0/1): 'calm' (no light on), 'watch' (a light is on), 'worse' (the trend light on `trend_days`+ days in a row,
-    or both lights on; it lasts until no light has been on for `quiet_days` in a row), 'recovering' (a Worse stretch ended within `recovering` days and no light is on).
+def run_states(trend, credit, start: int = 0, quiet_days: int = STATUS_QUIET_DAYS, recovering: int = STATUS_RECOVERING) -> dict:
+    """The daily status from the two lights (arrays of 0/1): 'calm' (no light on), 'watch' (a light is on), 'worse' (both lights on together; it lasts until no
+    light has been on for `quiet_days` in a row), 'recovering' (a Worse stretch ended within `recovering` days and no light is on).
     Also the run lengths and the Worse episodes as (first day, last day or None if still going)."""
     tr, cr = np.asarray(trend, float) == 1, np.asarray(credit, float) == 1
     n = len(tr)
@@ -326,7 +325,7 @@ def run_states(trend, credit, start: int = 0, trend_days: int = STATUS_TREND_DAY
     quiet = run_lengths(~(tr | cr))
     states, episodes, out, ep_start, ended = [None] * n, [], False, None, None
     for i in range(start, n):
-        if not out and (trr[i] >= trend_days or bor[i] >= 1):
+        if not out and bor[i] >= 1:
             out, ep_start = True, i
         elif out and quiet[i] >= quiet_days:
             out, ended = False, i
@@ -357,7 +356,7 @@ def status(px: pd.Series, baa: pd.Series, cash: pd.Series | None = None) -> dict
         eps = []
         for a, b in rs["episodes"]:
             sell, buy = min(a + 1, n - 1), min((b if b is not None else n - 1) + 1, n - 1)
-            eps.append(dict(trigger="both" if rs["both_run"][a] >= 1 else "trend", start=idx[a].strftime("%Y-%m-%d"), end=None if b is None else idx[b].strftime("%Y-%m-%d"), days=int((b if b is not None else n - 1) - a),
+            eps.append(dict(start=idx[a].strftime("%Y-%m-%d"), end=None if b is None else idx[b].strftime("%Y-%m-%d"), days=int((b if b is not None else n - 1) - a),
                             dd_start=float(high[a]), worst=float(high[a:(b if b is not None else n - 1) + 1].min()), dd_end=float(high[b if b is not None else n - 1]),
                             change=float(pv[buy] / pv[sell] - 1)))
         held = np.ones(n)                                                                        # the position decided at each close: out from the sell signal until the buy signal
@@ -378,7 +377,7 @@ def status(px: pd.Series, baa: pd.Series, cash: pd.Series | None = None) -> dict
         i = n - 1
         out = dict(state=cur, trend_days=int(rs["trend_run"][i]), credit_days=int(rs["credit_run"][i]), both_days=int(rs["both_run"][i]), quiet_days=int(rs["quiet_run"][i]),
                    worse_days=(i - rs["episodes"][-1][0]) if rs["out"] else 0, since=idx[s0].strftime("%Y-%m"), cash="tbill" if cash is not None and cash.notna().any() else "zero",
-                   params=dict(trend_days=STATUS_TREND_DAYS, quiet_days=STATUS_QUIET_DAYS, recovering=STATUS_RECOVERING), episodes=eps,
+                   params=dict(quiet_days=STATUS_QUIET_DAYS, recovering=STATUS_RECOVERING), episodes=eps,
                    share_worse=float(1 - pos[s0:].mean()), years=float(yrs), backtest=dict(rule=summ(strat), rule_nocash=summ(strat0), hold=summ(ret)))
         return out
     except Exception:  # noqa: BLE001  optional context: never break the page's numbers

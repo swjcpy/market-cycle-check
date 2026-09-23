@@ -162,7 +162,11 @@ def _downside_risk(daily: pd.Series | None) -> dict | None:
     if daily is None:
         return None
     try:
-        return downside_risk_test.panel(daily, fetch_series("BAA10Y"))
+        try:
+            cash = fetch_series("TB3MS")
+        except Exception:  # noqa: BLE001  cash then earns 0 in the hypothetical result
+            cash = None
+        return downside_risk_test.panel(daily, fetch_series("BAA10Y"), cash=cash)
     except Exception as e:  # noqa: BLE001  optional context: never break the page's numbers
         print(f"warning: downside-risk data unavailable ({type(e).__name__}: {e})", file=sys.stderr)
         return None

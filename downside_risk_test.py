@@ -35,6 +35,10 @@ from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
 
 log = logging.getLogger(__name__)
 RECENT_FROM = "2010-01-01"   # the card also shows the record since the 2008-09 crisis, because the long bear markets dominate the full history
+STATUS_TREND_DAYS = 42     # "Worse": the trend light has been on this many trading days in a row (or both lights are on)
+STATUS_QUIET_DAYS = 5      # a Worse stretch ends once no light has been on for this many trading days in a row
+STATUS_RECOVERING = 63     # and the status reads "Recovering" for this many trading days afterwards, while no light is on
+STATUS_FROM = "1991-01-01"  # the credit light needs 5 years of Baa history, which starts in 1986
 HORIZON = 63               # trading days
 FALL = -0.10
 WINDOW = 1260              # trailing 5 years of trading days
@@ -244,7 +248,7 @@ def passes(r: dict, episode_share: float) -> bool:
                 and r["lift_h1"] >= PASS_HALF_LIFT and r["lift_h2"] >= PASS_HALF_LIFT and episode_share >= 0.5)
 
 
-def panel(px: pd.Series, baa: pd.Series, fall: float = FALL) -> dict | None:
+def panel(px: pd.Series, baa: pd.Series, fall: float = FALL, cash: pd.Series | None = None) -> dict | None:
     """What the dashboard shows: the two chosen lights (S1 trend, C1 credit stress), each with its state today and its record, evaluated exactly
     like the research test (weekly samples from 1995, walk-forward frequencies, 63 trading days, a fall of `fall`). None if the data is too short."""
     try:
@@ -288,6 +292,7 @@ def panel(px: pd.Series, baa: pd.Series, fall: float = FALL) -> dict | None:
                 row["spread"] = float(b.iloc[-1]) if pd.notna(b.iloc[-1]) else None
                 row["threshold"] = float(thr.iloc[-1]) if pd.notna(thr.iloc[-1]) else None
             out["flags"][key] = row
+        out["status"] = status(px, baa, cash)
         for e, wt, wc in zip(eps, [warned(fl["trend"], px, c) for _, c, _, _ in eps], [warned(fl["credit"], px, c) for _, c, _, _ in eps]):
             out["falls"].append(dict(peak=e[0].strftime("%Y-%m"), drop=round(float(e[3]), 3), trend=wt[1] if wt[0] else None, credit=wc[1] if wc[0] else None))
         n_lit = fl["trend"].loc[grid] + fl["credit"].loc[grid]                              # exploratory, in-sample: not one of the pre-specified tests
@@ -299,6 +304,84 @@ def panel(px: pd.Series, baa: pd.Series, fall: float = FALL) -> dict | None:
         return out
     except Exception:  # noqa: BLE001  optional context: never break the page's numbers
         log.exception("downside-risk panel failed")
+        return None
+
+
+def run_lengths(a) -> np.ndarray:
+    """For each position, the number of consecutive positions up to and including it where `a` is truthy (0 where it is not)."""
+    out, c = np.zeros(len(a)), 0
+    for i, v in enumerate(a):
+        c = c + 1 if v else 0
+        out[i] = c
+    return out
+
+
+def run_states(trend, credit, start: int = 0, trend_days: int = STATUS_TREND_DAYS, quiet_days: int = STATUS_QUIET_DAYS, recovering: int = STATUS_RECOVERING) -> dict:
+    """The daily status from the two lights (arrays of 0/1): 'calm' (no light on), 'watch' (a light is on), 'worse' (the trend light on `trend_days`+ days in a row,
+    or both lights on; it lasts until no light has been on for `quiet_days` in a row), 'recovering' (a Worse stretch ended within `recovering` days and no light is on).
+    Also the run lengths and the Worse episodes as (first day, last day or None if still going)."""
+    tr, cr = np.asarray(trend, float) == 1, np.asarray(credit, float) == 1
+    n = len(tr)
+    trr, crr, bor = run_lengths(tr), run_lengths(cr), run_lengths(tr & cr)
+    quiet = run_lengths(~(tr | cr))
+    states, episodes, out, ep_start, ended = [None] * n, [], False, None, None
+    for i in range(start, n):
+        if not out and (trr[i] >= trend_days or bor[i] >= 1):
+            out, ep_start = True, i
+        elif out and quiet[i] >= quiet_days:
+            out, ended = False, i
+            episodes.append((ep_start, i))
+        if out:
+            states[i] = "worse"
+        elif ended is not None and i - ended <= recovering and not (tr[i] or cr[i]):
+            states[i] = "recovering"
+        else:
+            states[i] = "watch" if (tr[i] or cr[i]) else "calm"
+    if out:
+        episodes.append((ep_start, None))
+    return dict(states=states, trend_run=trr, credit_run=crr, both_run=bor, quiet_run=quiet, episodes=episodes, out=out, ended=ended)
+
+
+def status(px: pd.Series, baa: pd.Series, cash: pd.Series | None = None) -> dict | None:
+    """The 'Watch / Worse / Recovering' status today, how long each light has been on, every past Worse stretch, and the hypothetical result of selling when a
+    Worse stretch starts and buying back when it ends (a signal at one close is filled at the next day's close; cash earns the 3-month T-bill rate if given, else 0; no costs or taxes)."""
+    try:
+        tr, cr = s1(px).fillna(0).to_numpy(), c1(px, baa).fillna(0).to_numpy()
+        idx, n = px.index, len(px)
+        s0 = int(np.searchsorted(idx, pd.Timestamp(STATUS_FROM)))
+        if n - s0 < 1500:
+            return None
+        rs = run_states(tr, cr, s0)
+        high = (px / px.cummax() - 1).to_numpy()
+        pv = px.to_numpy(float)
+        eps = []
+        for a, b in rs["episodes"]:
+            sell, buy = min(a + 1, n - 1), min((b if b is not None else n - 1) + 1, n - 1)
+            eps.append(dict(start=idx[a].strftime("%Y-%m-%d"), end=None if b is None else idx[b].strftime("%Y-%m-%d"), days=int((b if b is not None else n - 1) - a),
+                            dd_start=float(high[a]), worst=float(high[a:(b if b is not None else n - 1) + 1].min()), dd_end=float(high[b if b is not None else n - 1]),
+                            change=float(pv[buy] / pv[sell] - 1)))
+        held = np.ones(n)                                                                        # the position decided at each close: out from the sell signal until the buy signal
+        for a, b in rs["episodes"]:
+            held[a: (b if b is not None else n)] = 0.0
+        pos = np.roll(held, 2)                                                                   # signal at the close of day t, fill at the close of t+1, first return earned on t+2
+        pos[:s0 + 2] = 1.0
+        ret = px.pct_change().fillna(0).to_numpy()
+        c = np.zeros(n) if cash is None else cash.reindex(idx.union(cash.index)).ffill().reindex(idx).shift(21).fillna(0).to_numpy() / 100 / 252
+        strat = np.where(pos == 1.0, ret, c)
+        yrs = (idx[-1] - idx[s0]).days / 365.25
+
+        def summ(r):
+            eq = np.cumprod(1 + r[s0:])
+            return dict(cagr=float(eq[-1] ** (1 / yrs) - 1), worst=float((eq / np.maximum.accumulate(eq) - 1).min()))
+        cur = rs["states"][-1]
+        i = n - 1
+        out = dict(state=cur, trend_days=int(rs["trend_run"][i]), credit_days=int(rs["credit_run"][i]), both_days=int(rs["both_run"][i]), quiet_days=int(rs["quiet_run"][i]),
+                   worse_days=(i - rs["episodes"][-1][0]) if rs["out"] else 0, since=idx[s0].strftime("%Y-%m"), cash="tbill" if cash is not None else "zero",
+                   params=dict(trend_days=STATUS_TREND_DAYS, quiet_days=STATUS_QUIET_DAYS, recovering=STATUS_RECOVERING), episodes=eps,
+                   share_worse=float(1 - pos[s0:].mean()), years=float(yrs), backtest=dict(rule=summ(strat), hold=summ(ret)))
+        return out
+    except Exception:  # noqa: BLE001  optional context: never break the page's numbers
+        log.exception("status failed")
         return None
 
 

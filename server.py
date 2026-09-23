@@ -499,9 +499,10 @@ def reversal_html(r) -> str:
     return f'<p class="reversal"><b>Direction changes:</b> {esc(note)}</p>' if note else ""
 
 
-PRICE_BASED = {"headline": "It combines the lending and investor-mood gauges, and investor mood is mostly made from stock prices (see below), so it partly repeats the market.",
-               "psychology": "Three of its four readings come from stock prices or price swings (the VIX fear index, the S&P 500 against its 10-year trend, and the market's "
-                             "price-to-earnings ratio), so it partly repeats the market."}
+PRICE_BASED = {"headline": "It combines the lending and investor-mood gauges. Investor mood is mostly made from stock prices, and lenders' risk spreads also tend to "
+                             "tighten when stocks rise, so it partly repeats the market.",
+               "psychology": "Three of its four readings come from stock prices or expected price swings (the VIX fear index, the S&P 500 against its 10-year trend, and "
+                             "the market's price compared with a decade of earnings), so it partly repeats the market."}
 
 
 def market_link_html(link, key: str) -> str:
@@ -514,8 +515,14 @@ def market_link_html(link, key: str) -> str:
             return ""
     except (KeyError, TypeError, ValueError, OverflowError):
         return ""
-    text = (f"Since {since}, this gauge and the S&P 500's change over the past year have moved together with a correlation of {lvl:+.2f} "
-            f"(+1 means they always rise and fall together, 0 means no link). Month to month the correlation is {mon:+.2f}. {PRICE_BASED[key]} "
+    try:
+        rec = float(link.get("recent"))
+        recent = f" In the last 10 years it was {_lvl(rec)}." if math.isfinite(rec) else ""
+    except (TypeError, ValueError, OverflowError):
+        recent = ""
+    text = (f"Since {since}, this gauge and the S&P 500's change over the past year (dividends included) have had a correlation of {_lvl(lvl)} "
+            f"(+1 is a perfect match, 0 is no link, and a negative number means they tended to move in opposite directions).{recent} "
+            f"Comparing each month's change in the gauge with the S&P 500's return that month, it is {_lvl(mon)}. {PRICE_BASED[key]} "
             "It does not mean the gauge predicts the market.")
     return f'<p class="marketlink"><b>How much of this is just the stock market?</b> {esc(text)}</p>'
 

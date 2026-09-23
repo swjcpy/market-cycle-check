@@ -171,8 +171,10 @@ def _market_link(score: pd.Series, daily: pd.Series | None) -> dict | None:
         chg = pd.concat([s.diff().rename("s"), (sp.pct_change() * 100).rename("m")], axis=1, sort=True).dropna()
         if len(lvl) < 96 or len(chg) < 96 or min(lvl['s'].std(), lvl['m'].std(), chg['s'].std(), chg['m'].std()) == 0:
             return None                                                            # too short, or a flat series (no correlation exists)
+        last = lvl.iloc[-120:]                                                       # the last 10 years: the tie has not been constant
+        recent = _clean(round(float(last["s"].corr(last["m"])), 2)) if min(last["s"].std(), last["m"].std()) > 0 else None
         out = dict(level=_clean(round(float(lvl["s"].corr(lvl["m"])), 2)), monthly=_clean(round(float(chg["s"].corr(chg["m"])), 2)),
-                   since=lvl.index[0].year, months=len(lvl))
+                   recent=recent, since=lvl.index[0].year, months=len(lvl))
         return out if out["level"] is not None and out["monthly"] is not None else None
     except Exception:  # noqa: BLE001  optional context: never break the page's numbers
         return None

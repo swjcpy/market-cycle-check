@@ -111,6 +111,13 @@ def test_script_is_valid_and_wires_zoom_and_view_persistence():
         assert r.returncode == 0, r.stderr
 
 
+def _reversal(hist):
+    by = {d[:7]: v for d, v in hist}
+    ts = [("high", "1996-03", None), ("low", "2001-06", 1.2), ("high", "2007-06", 0.8), ("low", "2019-06", 0.6), ("high", "2023-06", 0.3), ("low", "2026-08", 1.5)]
+    turns = [dict(kind=k, date=d, value=by[d], confirmed=d, swing=w) for k, d, w in ts]
+    return dict(threshold=0.4, trend="up", latest=turns[-1], run=dict(date="2026-08", value=by["2026-08"]), now=0.0, asof="2026-09", turns=turns)
+
+
 # ---- the real script, run under node with a small fake DOM ------------------------------------------------------------
 from html.parser import HTMLParser  # noqa: E402
 
@@ -151,7 +158,7 @@ def test_script_behaviour_under_a_fake_dom():
     mk = _market(381)
     mk["fwd"] = mk["fwd"][:-1]
     page = ('<div id="a">' + server.svg_history(hist, [], "a", mk).replace("data-h='" + json.dumps(hist) + "'", "data-h='not json'")
-            + server.zoom_controls("a") + '</div><div id="b">' + server.chart_pair(hist, [["2001-04-01", "2001-11-30"]], "b", mk)
+            + server.zoom_controls("a") + '</div><div id="b">' + server.chart_pair(hist, [["2001-04-01", "2001-11-30"]], "b", mk, None, _reversal(hist))
             + '</div><div id="c">' + server.chart_pair(hist[-24:], [], "c", mk) + '</div>'
             + '<script type="application/json" id="mkt-data">' + server.market_data(mk).split(">", 1)[1].rsplit("<", 1)[0] + '</script>')
     tree = _tree(page)
@@ -165,6 +172,11 @@ def test_script_behaviour_under_a_fake_dom():
     assert out["view"] == "fwd" and "next year" in out["fwdMid"] and "not known yet" in out["fwdEnd"]
     assert "not known yet" in out["fwdJustAfter"] and "2025-09" in out["fwdJustAfter"] and "next year" in out["fwdLastKnown"] and "not known" not in out["fwdLastKnown"]
     assert out["brokenFirst"] is True and out["zoomAfterBroken"] is True                # one bad chart does not take the rest down
+    assert out["marksAll"] == [True, True, False, False, False, True]                                    # a wide chart shows only the big swings (and the first turn)
+    assert out["marks20"] == [False, False, True, False, False, True] and out["marks10"] == [False, False, False, True, False, True]
+    assert out["marks5"] == [False, False, False, False, True, True]                                     # zoomed in: every turn in view, out-of-view ones hidden
+    assert out["startNorev"] is True and out["startChecked"] is False                                    # a saved "hidden" choice is honoured on load
+    assert out["norevAfter"] is False and out["stored1"] == "1" and out["norev"] is True and out["stored0"] == "0"   # the checkbox switches the layer and remembers it
     assert out["hiddenControl"][-1] == "none"                                            # a 2-year history has nothing to zoom to
 
 

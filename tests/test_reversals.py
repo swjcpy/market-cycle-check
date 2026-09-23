@@ -94,11 +94,13 @@ def test_summary_reversal_shape_dates_and_history_filter():
     vals = [0.0] * 6 + [0.5, 0.9, 0.8, 0.5, 0.2] + [0.2] * 20
     r = summary._reversal(_series(vals))
     assert r["threshold"] == 0.4 and r["trend"] == "down" and r["now"] == 0.2 and r["asof"] == "1996-07"
-    assert r["latest"] == dict(kind="high", date="1994-08", value=0.9, confirmed="1994-10")           # high at index 7, confirmed 2 months later (0.9 - 0.5 = 0.4)
+    assert r["latest"] == dict(kind="high", date="1994-08", value=0.9, confirmed="1994-10", swing=0.9)           # high at index 7, confirmed 2 months later (0.9 - 0.5 = 0.4)
     assert r["run"] == dict(date="1994-11", value=0.2)
     assert [t["date"] for t in r["turns"]] == []                                                       # everything is before the chart starts (1995-01)
     late = summary._reversal(_series([0.0] * 20 + [0.5, 0.9, 0.8, 0.5] + [0.5] * 6))
     assert [(t["kind"], t["date"]) for t in late["turns"]] == [("high", "1995-10")] and late["latest"]["confirmed"] == "1995-12"   # the earlier low (1994-01) predates the chart
+    sw = summary._reversal(_series([0.0] * 20 + [0.5, 0.9, 0.8, 0.5, 0.2, 0.2, 0.7, 0.2]))["turns"]
+    assert [(t["kind"], t["value"], t["swing"]) for t in sw] == [("high", 0.9, 0.9), ("low", 0.2, 0.7), ("high", 0.7, 0.5)]       # swing = move from the previous extreme
     assert summary._reversal(_series([0.0] * 12 + [0.396] * 6))["latest"]["kind"] == "low"          # detected on the two-decimal values the chart shows (0.396 -> 0.40)
     assert summary._reversal(_series([0.1] * 11)) is None and summary._reversal(_series([float("nan")] * 30)) is None and summary._reversal(None) is None
 
@@ -142,3 +144,53 @@ def test_the_note_reaches_every_card_and_the_hero_and_a_bad_one_cannot_break_the
     bad["cycles"][1].pop("reversal")
     page = server.render(bad, "now", None)
     assert page.count('class="reversal"') == 6 and "Market Cycle Check" in page
+
+
+# ---- markers on the chart ------------------------------------------------------------------------------------------------
+import re  # noqa: E402
+
+
+def _hist(n=381, start="1995-01-31"):
+    return [[d.strftime("%Y-%m-%d"), round(float(np.sin(i / 15)), 2)] for i, d in enumerate(pd.date_range(start, periods=n, freq="ME"))]
+
+
+def _rev(turns):
+    return dict(threshold=0.4, trend="down", latest=turns[-1] if turns else None, run=dict(date="2026-01", value=0.0), now=0.0, asof="2026-09", turns=turns)
+
+
+def test_marks_are_triangles_on_the_line_with_position_and_swing_and_skip_bad_entries():
+    hist = _hist()
+    by = {d[:7]: v for d, v in hist}
+    turns = [dict(kind="high", date="2000-01", value=by["2000-01"], confirmed="2000-04", swing=None),
+             dict(kind="low", date="2003-05", value=by["2003-05"], confirmed="2003-08", swing=1.234),
+             dict(kind="low", date="1980-01", value=0.0, confirmed="1980-04", swing=1.0),                # not on the chart
+             dict(kind="peak", date="2005-01", value=0.0, confirmed="2005-04", swing=1.0),               # unknown kind
+             dict(kind="high", date="2006-01", value=0.0, confirmed="2006-04", swing="x"), None, 5, dict(kind="high")]
+    svg = server.svg_history(hist, [], "u", None, None, _rev(turns))
+    marks = re.findall(r'<text class="rmark" x="([\d.]+)" y="([\d.]+)" text-anchor="middle" aria-hidden="true" data-f="([\d.]+)"( data-a="[\d.]+")?>(.)</text>', svg)
+    assert [m[4] for m in marks] == [server.DOWN, server.UP] and marks[0][3] == "" and marks[1][3] == ' data-a="1.23"'      # first turn has no swing: always shown
+    x0 = float(marks[0][0])
+    assert abs(float(marks[0][2]) - (x0 - 60) / 516) < 1e-4                                                              # data-f = fraction of the plot width
+    yline = 10 + (2.2 - by["2000-01"]) / 4.4 * 188
+    assert abs(float(marks[0][1]) - (yline - 6)) < 0.06 and abs(float(marks[1][1]) - (10 + (2.2 - by["2003-05"]) / 4.4 * 188 + 13)) < 0.06   # high above, low below
+    assert svg.count('class="rlayer"') == 1 and svg.index('class="rlayer"') < svg.index('class="zpt"')
+    assert "rlayer" not in server.svg_history(hist, [], "u") and "rlayer" not in server.svg_history(hist, [], "u", None, None, _rev([])) and "rlayer" not in server.svg_history(hist, [], "u", None, None, "junk")
+
+
+def test_controls_offer_the_toggle_and_explain_the_markers_only_when_there_are_marks():
+    hist = _hist()
+    by = {d[:7]: v for d, v in hist}
+    rev = _rev([dict(kind="high", date="2000-01", value=by["2000-01"], confirmed="2000-04", swing=None)])
+    block = server.chart_pair(hist, [], "u", None, None, rev)
+    assert 'class="rtoggle-box" checked' in block and "Show turns" in block and "marked once it has moved 0.4 away" in block and "appear as you zoom in" in block
+    assert 'rtoggle-box' not in server.chart_pair(hist, [], "u", None) and "rkey" not in server.chart_pair(hist, [], "u", None, None, _rev([]))
+    assert "moved 0.4 away" in server.chart_pair(hist, [], "u", None, None, dict(rev, threshold="bad"))                    # a bad threshold falls back to 0.4
+    assert "body.norev .rlayer" in server.CSS and ".rmark{font-size:11px;fill:var(--line);visibility:hidden}" in server.CSS       # hidden without the script
+    assert "'mc-rev'" in server.js_source() and "norev" in server.js_source()
+
+
+def test_python39_can_compile_the_server():
+    import subprocess
+    py = "/usr/bin/python3"
+    if Path(py).exists():
+        subprocess.run([py, "-m", "py_compile", str(Path(__file__).parent.parent / "server.py")], check=True)

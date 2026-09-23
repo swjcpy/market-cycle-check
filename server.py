@@ -140,7 +140,34 @@ def _turn_markers(turns, hist: list, X, Y, pad_t: int, pad_b: int, h: int, fx=No
     return ('<g class="mlayer mturn">' + "".join(lines) + "</g>" if lines else "", '<g class="mlayer mturn-pt">' + "".join(pts) + "</g>" if pts else "")
 
 
-def svg_history(hist: list, recessions: list, uid: str, market: dict | None = None, turns: list | None = None, w: int = 640, h: int = 220) -> str:
+DOWN, UP = "\u25bc", "\u25b2"          # (an f-string expression cannot hold a backslash on Python 3.9)
+
+
+def _rev_marks(reversal, hist: list, X, Y, fx) -> str:
+    """A small triangle at each confirmed high (pointing down, above the line) and low (pointing up, below it) of the gauge. Positioned by the
+    script (data-f); data-a is the swing size, which decides at which zoom level the mark is shown."""
+    turns = reversal.get("turns") if isinstance(reversal, dict) else None
+    if not isinstance(turns, list):
+        return ""
+    by_month = {d[:7]: (d, v) for d, v in hist}
+    out = []
+    for t in turns:
+        try:
+            d, v = by_month[str(t["date"])[:7]]
+            high = t["kind"] == "high"
+            if t["kind"] not in ("high", "low"):
+                continue
+            sw = t.get("swing")
+            a = f' data-a="{float(sw):.2f}"' if sw is not None and math.isfinite(float(sw)) else ""
+            glyph = DOWN if high else UP
+            out.append(f'<text class="rmark" x="{X(d):.1f}" y="{Y(v) + (-6 if high else 13):.1f}" text-anchor="middle" aria-hidden="true" data-f="{fx(d):.5f}"{a}>{glyph}</text>')
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+    return '<g class="rlayer">' + "".join(out) + "</g>" if out else ""
+
+
+def svg_history(hist: list, recessions: list, uid: str, market: dict | None = None, turns: list | None = None, reversal: dict | None = None,
+                w: int = 640, h: int = 220) -> str:
     """Gauge history as inline SVG, with (optionally) the S&P 500 layered on as a thin grey line read on the RIGHT-hand scale.
     Three views of the stock market can be switched between (see MARKET_VIEWS). The two lines always use different scales, so
     where they cross means nothing; the legend and caption say so."""
@@ -195,6 +222,7 @@ def svg_history(hist: list, recessions: list, uid: str, market: dict | None = No
     zoomed.append(turn_lines)
     parts.append(f'<g clip-path="url(#{clip})"><g class="zoom">' + "".join(zoomed) + '</g></g>')
     parts.append(turn_points)
+    parts.append(_rev_marks(reversal, hist, X, Y, fx))
     lx, ly = X(hist[-1][0]), Y(hist[-1][1])
     parts.append(f'<circle class="zpt" data-f="{fx(hist[-1][0]):.5f}" cx="{lx:.1f}" cy="{ly:.1f}" r="5" fill="var(--line)" stroke="var(--surface)" stroke-width="2"/>')
     mdot = '<circle class="mdot mlayer" style="display:none" r="3.5" fill="var(--ink2)" stroke="var(--surface)" stroke-width="1.5"/>' if views else ""
@@ -206,25 +234,33 @@ def svg_history(hist: list, recessions: list, uid: str, market: dict | None = No
 ZOOM_YEARS = (20, 10, 5, 2)
 
 
-def zoom_controls(uid: str) -> str:
+def zoom_controls(uid: str, reversal: dict | None = None) -> str:
     """Range buttons under a chart (the script hides ranges longer than the chart's history and does the zooming; without the
     script the whole block is hidden and the chart simply shows everything)."""
     btns = '<button type="button" class="zbtn on" data-y="0" aria-pressed="true">All</button>' + "".join(
         f'<button type="button" class="zbtn" data-y="{y}" aria-pressed="false">{y}y</button>' for y in ZOOM_YEARS)
-    return (f'<div class="legend zctl" data-for="{esc(uid)}"><span class="zlab">Zoom:</span>{btns}'
+    marks = ""
+    if reversal is not None:
+        try:
+            th = f"{float(reversal['threshold']):.1f}"
+        except (KeyError, TypeError, ValueError):
+            th = "0.4"
+        marks = (f'<label class="rtoggle"><input type="checkbox" class="rtoggle-box" checked> Show turns</label>'
+                 f'<span class="sub rkey">{DOWN} {UP} a high or low of this gauge, marked once it has moved {th} away from it (small swings appear as you zoom in).</span>')
+    return (f'<div class="legend zctl" data-for="{esc(uid)}"><span class="zlab">Zoom:</span>{btns}{marks}'
             '<span class="sub zhint">Pinch, or Ctrl/\u2318 + scroll, to zoom; drag to move; double-click to reset.</span></div>')
 
 
-def chart_pair(hist: list, recessions: list, uid: str, market: dict | None, turns: list | None = None) -> str:
+def chart_pair(hist: list, recessions: list, uid: str, market: dict | None, turns: list | None = None, reversal: dict | None = None) -> str:
     """The gauge chart with, when price data exists, the S&P 500 layered on it, a view switch, a legend and an honest caption."""
     try:
-        chart = svg_history(hist, recessions, uid, market, turns)
+        chart = svg_history(hist, recessions, uid, market, turns, reversal)
     except Exception:  # noqa: BLE001  the price layer is optional context: never let it take the chart (or page) down
         log.exception("price layer failed for %s", uid)
         chart = svg_history(hist, recessions, uid)
     if not chart:
         return chart
-    zoom = zoom_controls(uid)
+    zoom = zoom_controls(uid, reversal if 'class="rlayer"' in chart else None)
     present = [k for k in MARKET_VIEWS if f'mv-{k}"' in chart]
     if not present:
         return chart + zoom
@@ -520,7 +556,7 @@ def render_card(c: dict, market: dict | None = None) -> str:
       <h4>The readings behind it</h4>
       <table class="ind stack"><thead><tr><th>Reading</th><th class="num">Now</th><th class="num">Verdict</th></tr></thead><tbody>{rows}</tbody></table>
       <h4>History since 1995</h4>
-      {chart_pair(c["history"], c["recessions"], c["key"], market, (c.get("leadlag") or {}).get("turns"))}
+      {chart_pair(c["history"], c["recessions"], c["key"], market, (c.get("leadlag") or {}).get("turns"), c.get("reversal"))}
       {leadlag_html(c)}
       <p class="sub">Grey bands are recessions. Score as of {esc(c["as_of"] or "?")}.{partial} {data_line(c)}</p>
       <p class="limit"><b>Limits.</b> {esc(c["limit"])}</p>
@@ -608,7 +644,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
   <p class="drivers"><b>What is driving this:</b> {drivers}</p>
   <div class="cols"><div><h4>Sensible habits in any market</h4><ul>{do}</ul></div><div><h4>What to be careful about</h4><ul>{avoid}</ul></div></div>
   <p class="sub"><b>{esc(h["not_a_signal"])}</b> Past readings of these gauges did not reliably predict what stocks did next.</p>
-  {chart_pair(h["history"], h["recessions"], "headline", s.get("market"))}
+  {chart_pair(h["history"], h["recessions"], "headline", s.get("market"), None, h.get("reversal"))}
   <p class="sub">The headline combines two gauges (lending and investor mood). Grey bands are recessions.</p>
 </section>
 {safe_track(h)}
@@ -643,7 +679,7 @@ h1{margin:0;font-size:1.5rem}h2{font-size:1.5rem;line-height:1.25;margin:.3rem 0
 .cols{display:grid;grid-template-columns:1fr;gap:0 24px}@media(min-width:720px){.cols{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr 1fr}}
 ul{margin:.3rem 0 .6rem;padding-left:1.2rem}li{margin:.25rem 0}
 .pill{display:inline-block;padding:3px 11px;border-radius:999px;border:1.5px solid var(--c,var(--bd));background:color-mix(in srgb,var(--c,var(--bd)) 16%,transparent);font-size:.85rem;font-weight:600;white-space:nowrap}
-.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl,.nojs .zctl{display:none}.zbtn{font:inherit;font-size:.8rem;color:var(--ink2);background:transparent;border:1px solid var(--bd);border-radius:999px;padding:3px 12px;min-height:30px;cursor:pointer}.zbtn.on{color:var(--ink);border-color:var(--line);font-weight:600}.zctl{align-items:center}.zlab{white-space:nowrap}.chart{user-select:none;-webkit-user-select:none}.zhint{font-size:.75rem}
+.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl,.nojs .zctl{display:none}.zbtn{font:inherit;font-size:.8rem;color:var(--ink2);background:transparent;border:1px solid var(--bd);border-radius:999px;padding:3px 12px;min-height:30px;cursor:pointer}.zbtn.on{color:var(--ink);border-color:var(--line);font-weight:600}.zctl{align-items:center}.zlab{white-space:nowrap}.rmark{font-size:11px;fill:var(--line);visibility:hidden}.rtoggle{white-space:nowrap;cursor:pointer;font-size:.8rem}.rkey{font-size:.75rem}body.norev .rlayer,body.norev .rkey{display:none!important}.chart{user-select:none;-webkit-user-select:none}.zhint{font-size:.75rem}
 .mv{display:none}body[data-mview="yoy"] .mv-yoy,body[data-mview="fwd"] .mv-fwd,body[data-mview="dd"] .mv-dd,body[data-mview="px"] .mv-px{display:inline}body.nomkt .mlayer,body.nomkt .mkey,body.nomkt .mv{display:none!important}.mctl input{margin-right:4px}.drivers{margin:.4rem 0}
 .thermo{position:relative;height:12px;border-radius:8px;margin:12px 0 4px;background:linear-gradient(90deg,var(--cold),var(--cool) 30%,var(--normal) 50%,var(--warm) 70%,var(--hot))}
 .thermo.big{height:18px;border-radius:10px}.marker{position:absolute;top:-5px;width:6px;height:calc(100% + 10px);background:var(--ink);border:2px solid var(--surface);border-radius:4px;transform:translateX(-50%)}
@@ -655,7 +691,7 @@ details>summary{list-style:none;cursor:pointer}details>summary::-webkit-details-
 details[open] .more{display:none}.detail{margin-top:10px;border-top:1px solid var(--bd);padding-top:6px}
 table.ind{width:100%;border-collapse:collapse;font-size:.9rem}.ind th{font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;text-align:left;color:var(--ink2);border-bottom:1px solid var(--bd);padding:6px 4px}
 .ind td{padding:8px 4px;border-bottom:1px solid var(--bd);vertical-align:top}.num{text-align:right}.ind .now td{font-weight:700;background:color-mix(in srgb,var(--line) 12%,transparent)}
-.chart{width:100%;height:auto;display:block;touch-action:pan-y}.axis{font-size:10px;fill:var(--ink2)}@media(max-width:600px){.axis{font-size:15px}}.limit{border-left:3px solid var(--bd);padding-left:10px;color:var(--ink2);font-size:.9rem}
+.chart{width:100%;height:auto;display:block;touch-action:pan-y}.axis{font-size:10px;fill:var(--ink2)}@media(max-width:600px){.axis{font-size:15px}.rmark{font-size:16px}}.limit{border-left:3px solid var(--bd);padding-left:10px;color:var(--ink2);font-size:.9rem}
 .banner{background:color-mix(in srgb,var(--line) 10%,var(--card));border:1px solid var(--bd);border-left:4px solid var(--line);border-radius:10px;padding:10px 14px;margin:14px 0}.banner.warn{border-left-color:var(--warm)}
 .grp{display:grid;grid-template-columns:1fr;gap:8px}@media(min-width:720px){.grp{grid-template-columns:repeat(3,1fr)}}
 footer{color:var(--ink2);font-size:.82rem;padding:10px 0 60px}#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--surface);padding:4px 8px;border-radius:6px;font-size:.8rem;display:none;z-index:9}
@@ -679,6 +715,8 @@ function applyOn(on){body.classList.toggle('nomkt',!on);boxes.forEach(function(b
 function applyView(v){body.setAttribute('data-mview',v);radios.forEach(function(r){r.checked=(r.value===v)})}
 applyOn(load('mc-mkt')!=='0');var sv=load('mc-mview'),known=false;radios.forEach(function(r){if(r.value===sv)known=true});if(known)applyView(sv);
 boxes.forEach(function(b){b.addEventListener('change',function(){applyOn(b.checked);store('mc-mkt',b.checked?'1':'0')})});
+var rboxes=document.querySelectorAll('.rtoggle-box');function applyRev(on){body.classList.toggle('norev',!on);rboxes.forEach(function(b){b.checked=on})}
+applyRev(load('mc-rev')!=='0');rboxes.forEach(function(b){b.addEventListener('change',function(){applyRev(b.checked);store('mc-rev',b.checked?'1':'0')})});
 radios.forEach(function(r){r.addEventListener('change',function(){if(r.checked){applyView(r.value);store('mc-mview',r.value)}})});
 var NS='http://www.w3.org/2000/svg';
 document.querySelectorAll('svg.chart').forEach(function(svg){try{init(svg)}catch(err){}});
@@ -692,7 +730,7 @@ var shown=0;btns.forEach(function(x){var y=+x.getAttribute('data-y');if(y&&y>=T-
 function scale(view){var s=svg.getAttribute('data-m-'+view);if(!s)return null;var p=s.split(',');return [parseFloat(p[0]),parseFloat(p[1])]}
 function svgX(cx){var r=svg.getBoundingClientRect();return (cx-r.left)/r.width*vb.width}
 function apply(){var s=1/(b-a);zoomG.forEach(function(z){z.setAttribute('transform',a===0&&b===1?'':'translate('+(padL-s*(padL+a*W))+',0) scale('+s+',1)')});
-fixed.forEach(function(e){var f=+e.getAttribute('data-f'),x=padL+(f-a)/(b-a)*W;e.style.visibility=(f>=a-1e-9&&f<=b+1e-9&&(e.tagName==='circle'||x<=padL+W-56))?'':'hidden';if(e.tagName==='circle')e.setAttribute('cx',x);else e.setAttribute('x',x+(+e.getAttribute('data-dx')||0))});
+fixed.forEach(function(e){var f=+e.getAttribute('data-f'),x=padL+(f-a)/(b-a)*W;var am=e.getAttribute('data-a'),mark=e.getAttribute('class')==='rmark',need=T*(b-a)>20?1:T*(b-a)>10?0.7:T*(b-a)>5?0.5:0,ok=f>=a-1e-9&&f<=b+1e-9&&(e.tagName==='circle'||mark||x<=padL+W-56)&&(am===null||+am>=need-1e-9);e.style.visibility=mark?(ok?'visible':'hidden'):(ok?'':'hidden');if(e.tagName==='circle')e.setAttribute('cx',x);else e.setAttribute('x',x+(+e.getAttribute('data-dx')||0))});
 ticks.forEach(function(e){if(e.parentNode)e.parentNode.removeChild(e)});ticks=[];
 var span=T*(b-a),step=span>25?5:span>10?2:1,ya=new Date(t0+a*(t1-t0)).getUTCFullYear();
 for(var y=ya;y<=new Date(t0+b*(t1-t0)).getUTCFullYear();y++){if(y%step)continue;var f=(Date.UTC(y,0,1)-t0)/(t1-t0),x=padL+(f-a)/(b-a)*W;if(x<padL+8||x>padL+W-8)continue;

@@ -41,6 +41,8 @@ const document = { body, createElement: t => new El(t), createElementNS: (ns, t)
   getElementById: id => body.all(e => e.attrs.id === id)[0] || null, querySelectorAll: s => body.querySelectorAll(s) };
 document.body.appendChild = El.prototype.appendChild;
 const window = { innerWidth: 1000 };
+const store = { 'mc-rev': '0' };                  // a saved choice from an earlier visit: turns hidden
+global.localStorage = { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } };
 new Function('document', 'window', input.js)(document, window);
 const out = {};
 const svgs = body.querySelectorAll('svg.chart');
@@ -53,7 +55,16 @@ const vertexX = (svg, month) => { const data = JSON.parse(svg.attrs['data-h']); 
   const g = svg.querySelectorAll('.zoom').pop(); const pl = g.querySelectorAll('polyline').pop(); const x = +pl.attrs.points.split(' ')[i].split(',')[0]; const t = tf(svg); return t.tx + t.s * x; };
 
 const svg = svgs[1];                               // the chart with the odd (partial-month) last date
+const marks = s => s.querySelectorAll('text').filter(t => t.classList.contains('rmark')).map(t => t.style.visibility === 'visible');
 out.initialTransform = tf(svg);
+out.marksAll = marks(svg);
+btn(svg, 20).click(); out.marks20 = marks(svg);
+btn(svg, 10).click(); out.marks10 = marks(svg);
+btn(svg, 5).click(); out.marks5 = marks(svg);
+btn(svg, 0).click();
+const rbox = body.querySelectorAll('.rtoggle-box')[0]; out.startNorev = body.classList.contains('norev'); out.startChecked = rbox.checked;
+rbox.checked = true; fire(rbox, 'change', {}); out.norevAfter = body.classList.contains('norev'); out.stored1 = store['mc-rev'];
+rbox.checked = false; fire(rbox, 'change', {}); out.norev = body.classList.contains('norev'); out.stored0 = store['mc-rev'];
 btn(svg, 2).click(); out.zoom2 = tf(svg);
 out.buttonOn = body.querySelectorAll('.zctl').find(c => c.attrs['data-for'] === svg.attrs['data-uid']).querySelectorAll('.zbtn').filter(b => b.classList.contains('on')).map(b => b.attrs['data-y']);
 out.hoverErr = [];

@@ -165,7 +165,8 @@ def _reversal(s: pd.Series) -> dict | None:
             return None
         r = reversals.find_turns(vals)
         ym = lambda i: s.index[i].strftime("%Y-%m")  # noqa: E731
-        turns = [dict(kind=k, date=ym(e), value=vals[e], confirmed=ym(c)) for k, e, c in r["turns"]]
+        turns = [dict(kind=k, date=ym(e), value=vals[e], confirmed=ym(c), swing=None if j == 0 else round(abs(vals[e] - vals[r["turns"][j - 1][1]]), 2))
+                 for j, (k, e, c) in enumerate(r["turns"])]        # swing: the move from the previous confirmed extreme (small ones are hidden on a wide chart)
         run = None if r["extreme"] is None else dict(date=ym(r["extreme"]), value=vals[r["extreme"]])
         return dict(threshold=reversals.THRESHOLD, trend=r["trend"], latest=turns[-1] if turns else None, run=run, now=vals[-1], asof=ym(-1),
                     turns=[t for t in turns if t["date"] >= HISTORY_FROM[:7]])

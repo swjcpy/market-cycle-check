@@ -52,6 +52,12 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   topped out or bottomed out earlier, in the same month or later than the S&P (a high or low point a year or more from the fall is not
   called a turn and is not counted; a month either way counts as the same time). All descriptive: nothing here feeds a score, and with only four such falls in the
   data every number is rough.
+- Trend turns (`reversals.py`): a gauge's high or low is confirmed once the gauge has moved 0.4 (a fifth of its -2..+2 range) away
+  from it; each confirmation uses only data up to that month, and the mark is then placed on the true extreme, so a turn appears on
+  a chart about 2-3 months after it happened (longer for slow or quarterly gauges). Each card says when the latest turn was
+  confirmed and how far the gauge has moved since; the chart marks confirmed highs and lows with small triangles (small swings only
+  appear when you zoom in; a checkbox hides them). 0.4 was chosen from how often it fires and how fast, not fitted to market returns.
+  Descriptive only: nothing here predicts a turn in the market, and noisy gauges (investor mood) turn every few months.
 - `validate.py <cycle>` tests a cycle against forward S&P 500 returns (`data/validation_<cycle>.txt`).
 
 ## Weights

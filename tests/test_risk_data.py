@@ -36,12 +36,13 @@ def _inputs(n=4500, seed=0, crash_end=False, stress_end=False):
 def test_panel_shape_and_the_state_today():
     px, baa = _inputs()
     p = d.panel(px, baa)
-    assert set(p) == {"fall", "horizon_days", "base", "since", "weeks", "asof", "flags", "falls", "combo"}
+    assert set(p) == {"fall", "horizon_days", "base", "since", "weeks", "asof", "record_since", "tests", "combo_recent_from", "flags", "falls", "combo"}
+    assert p["tests"] == d.N_TESTS == 14 and p["combo_recent_from"] == d.RECENT_FROM and p["record_since"] > p["since"]
     assert p["fall"] == 0.10 and p["horizon_days"] == 63 and 0 < p["base"] < 0.6 and p["since"] >= "1995-01" and p["asof"] == px.index[-1].strftime("%Y-%m-%d")
     assert set(p["flags"]) == {"trend", "credit"}
     t, c = p["flags"]["trend"], p["flags"]["credit"]
     for row in (t, c):
-        assert {"lit", "share_lit", "p_lit", "p_off", "lift", "lift_lo", "lift_h1", "lift_h2", "false_alarms_per_year", "warned", "falls", "last_warned"} <= set(row)
+        assert {"lit", "share_lit", "p_lit", "p_off", "lift", "lift_lo", "lift_h1", "lift_h2", "false_alarms_per_year", "warned", "falls", "last_warned", "after_peak", "after_peak_dd"} <= set(row)
         assert 0 < row["share_lit"] < 1 and 0 <= row["warned"] <= row["falls"] == len(p["falls"])
     assert "gap" in t and "spread" in c and "threshold" in c and c["spread"] == pytest.approx(baa.iloc[-2]) and c["stale"] is False
     assert [x["lit"] for x in p["combo"]] == [0, 1, 2] and sum(x["weeks"] for x in p["combo"]) == p["weeks"] and sum(x["share"] for x in p["combo"]) == pytest.approx(1)
@@ -126,3 +127,56 @@ def test_build_carries_the_risk_data(monkeypatch):
         pytest.skip("no cached S&P 500 / Baa data")
     assert out["risk"] is not None                                                                       # with the data present the card data must be built
     assert out["risk"]["weeks"] > 1000 and {"trend", "credit"} == set(out["risk"]["flags"])
+
+
+def test_the_probabilities_match_an_independent_recomputation_and_are_not_swapped():
+    px, baa = _inputs()
+    p = d.panel(px, baa)
+    v = px.to_numpy()
+    y = pd.Series([float(v[i + 1:i + 64].min() / v[i] - 1 <= -0.10 + 1e-12) if i + 63 < len(v) else np.nan for i in range(len(v))], index=px.index)
+    ma = px.rolling(200).mean()
+    b = baa.shift(1).reindex(px.index)                                                                 # the spread known with a one-day lag (same business-day index)
+    trend = (px < ma).where(ma.notna()).astype(float)
+    credit = (b > b.rolling(d.WINDOW).quantile(0.8)).where(b.rolling(d.WINDOW).count() >= d.WINDOW).astype(float)
+    weeks = px.index.to_series().groupby(px.index.to_period("W")).last()
+    weeks = weeks[weeks >= pd.Timestamp("1995-01-01")]
+    grid = weeks[(y.reindex(weeks).notna() & trend.reindex(weeks).notna() & credit.reindex(weeks).notna()).to_numpy()]
+    assert len(grid) == p["weeks"] and grid.iloc[0].strftime("%Y-%m") == p["since"] and y.loc[grid].mean() == pytest.approx(p["base"])
+    pos = {t: i for i, t in enumerate(px.index)}
+    first = d.evaluated_from(y.loc[grid.to_numpy()], pos)
+    ev = grid[grid >= first]
+    for key, flag in (("trend", trend), ("credit", credit)):
+        on = flag.loc[ev].to_numpy() == 1
+        yy = y.loc[ev].to_numpy()
+        row = p["flags"][key]
+        assert row["p_lit"] == pytest.approx(yy[on].mean()) and row["p_off"] == pytest.approx(yy[~on].mean()) and row["share_lit"] == pytest.approx(on.mean())
+    assert p["flags"]["credit"]["p_lit"] != pytest.approx(p["flags"]["credit"]["p_off"], abs=0.01)     # (so a swap would be caught)
+    assert p["flags"]["trend"]["gap"] == pytest.approx(px.iloc[-1] / ma.iloc[-1] - 1)
+    c = p["flags"]["credit"]
+    assert c["spread"] == pytest.approx(b.iloc[-1]) and c["threshold"] == pytest.approx(b.rolling(d.WINDOW).quantile(0.8).iloc[-1])
+    eps = d.episodes(px)
+    assert [f["drop"] for f in p["falls"]] == [round(float(e[3]), 3) for e in eps]
+
+
+def test_the_stale_credit_boundaries_are_ten_and_four_hundred_days():
+    px, baa = _inputs()
+    assert px.index[-1] == pd.Timestamp("2010-04-02")
+    assert d.panel(px, baa.loc[:"2010-03-23"])["flags"]["credit"]["stale"] is False                    # 10 days old: normal
+    assert d.panel(px, baa.loc[:"2010-03-22"])["flags"]["credit"]["stale"] is True                     # 11 days old: not updating
+    assert d.panel(px, baa.loc[:"2009-02-26"]) is not None                                             # exactly 400 days: the record is still usable
+    assert d.panel(px, baa.loc[:"2009-02-25"]) is None                                                 # 401: it stopped long ago
+
+
+def test_first_days_on_and_the_market_state_at_that_time():
+    px, baa = _inputs(crash_end=True)
+    p = d.panel(px, baa)
+    for key in ("trend", "credit"):
+        r = p["flags"][key]
+        assert 0 <= r["after_peak"] <= r["warned"] and len(r["after_peak_dd"]) == r["after_peak"] and all(-1 < x <= 0 for x in r["after_peak_dd"])
+    eps = d.episodes(px)
+    fl = d.s1(px).astype(float)
+    late = [e for e in eps if d.first_lit_day(fl, px, e[1]) is not None and d.first_lit_day(fl, px, e[1]) > e[0]]
+    assert p["flags"]["trend"]["after_peak"] == len(late)
+    for c in p["combo"]:
+        assert c["recent_weeks"] <= c["weeks"] and (c["recent_p"] is None) == (c["recent_weeks"] == 0)
+    assert eps and d.first_lit_day(pd.Series(0.0, index=px.index), px, eps[0][1]) is None                # never on: no first day

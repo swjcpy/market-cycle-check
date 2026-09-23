@@ -235,7 +235,8 @@ RISK_FLAGS = {
                   why="The 200-day average is the market's average price over about ten months. Below it, the market is in a downtrend. This light rarely comes on before a fall "
                       "from a market high; mostly it marks a decline that is already under way."),
     "credit": dict(name="Credit stress", question="Is the extra interest companies pay to borrow (the Baa spread) unusually high?",
-                   why="Lenders ask for more when they fear trouble. This light comes on in long credit crises (2000-03, 2008-09). It has been slow or silent before sudden falls."),
+                   why="Lenders ask for more when they fear trouble. This light comes on in long credit crises (2000-03, 2008-09). It has been slow or silent before sudden falls: it has not "
+                       "come on ahead of any fall since 2000, and in 2007 it came on about six weeks after the market peaked."),
 }
 RISK_CAVEATS = ["Most weeks followed by a big fall were weeks when the market was already falling, so the lights are better at flagging risk during a decline than at catching its very start.",
                 "There have only been about a dozen such falls since 1995, and two long bear markets drive much of the record, so every number is rough."]

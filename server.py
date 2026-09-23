@@ -624,17 +624,22 @@ def _light(key: str, r: dict, risk: dict) -> str:
     state, cls = ("CAUTION (on)", "on") if lit is True else ("no caution (off)", "off") if lit is False else ("unknown", "unk")
     if key == "trend":
         gap = r.get("gap")
-        reading = (f"The S&P 500 is {abs(float(gap)) * 100:.1f}% {'above' if float(gap) >= 0 else 'below'} its 200-day average." if gap is not None else "")
+        reading = (f"The S&P 500 (with dividends) is {abs(float(gap)) * 100:.1f}% {'above' if float(gap) >= 0 else 'below'} its 200-day average." if gap is not None else "")
     else:
         sp, th = r.get("spread"), r.get("threshold")
         reading = (f"The Baa spread is {float(sp):.2f} points; the light turns on above {float(th):.2f}." if sp is not None and th is not None else "")
         if r.get("stale"):
             reading = "The spread has not updated for over 10 days, so today's state is unknown."
     fall = f"{float(risk['fall']) * 100:.0f}%"
+    since = str(risk.get("record_since") or risk["since"])[:4]
     warned, falls = int(r["warned"]), int(r["falls"])
-    last = f" The latest fall it was on before began in {_ym_name(r['last_warned'])}." if r.get("last_warned") else " It was on before none of them."
-    record = (f"When on, a {fall} fall followed within 3 months in {_frac_pct(r['p_lit'])} of weeks; when off, {_frac_pct(r['p_off'])}. "
-              f"It was on at least once in the 3 months before {warned} of the {falls} falls.{last}")
+    late, dds = int(r.get("after_peak") or 0), [float(x) for x in (r.get("after_peak_dd") or []) if math.isfinite(float(x))]
+    record = (f"Since {since}, when on, a {fall} fall followed within 3 months in {_frac_pct(r['p_lit'])} of weeks; when off, {_frac_pct(r['p_off'])}. "
+              f"It came on before the market had dropped {fall} in {warned} of the {falls} declines")
+    if warned and late:
+        record += f"; in {late} of those {warned} only after the market had already peaked" + (f", when it was already {abs(max(dds)) * 100:.0f}-{abs(min(dds)) * 100:.0f}% below its high" if dds else "")
+    record += "."
+    record += (f" The latest decline it came on before began in {_ym_name(r['last_warned'])}." if r.get("last_warned") else " It came on before none of them.")
     return (f'<div class="light {cls}"><p class="lname"><span class="dot" aria-hidden="true"></span><b>{esc(info["name"])}: {state}</b></p>'
             f'<p class="lq">{esc(info["question"])}</p><p class="lnow">{esc(reading)}</p><p class="sub">{esc(info["why"])}</p><p class="sub">{esc(record)}</p></div>')
 
@@ -647,41 +652,69 @@ def risk_html(risk) -> str:
         flags = risk["flags"]
         fall = f"{float(risk['fall']) * 100:.0f}%"
         lights = "".join(_light(k, flags[k], risk) for k in ("trend", "credit"))
-        known = [flags[k]["lit"] for k in ("trend", "credit") if flags[k].get("lit") is not None]
+        state = {k: flags[k].get("lit") for k in ("trend", "credit")}
+        known = [v for v in state.values() if v is not None]
         n_on = sum(1 for x in known if x)
         combo = next((c for c in risk.get("combo", []) if c.get("lit") == n_on and c.get("p_fall") is not None), None) if len(known) == 2 else None
         base = _frac_pct(risk["base"])
-        if len(known) < 2:
-            lead = f"One of the two lights is unknown right now. Over all weeks since {risk['since'][:4]}, a {fall} fall followed within 3 months in {base} of them."
+        names = {"trend": "trend", "credit": "credit"}
+        if len(known) == 0:
+            lead = f"Both lights are unknown right now. Over all weeks since {risk['since'][:4]}, a {fall} fall followed within 3 months in {base} of them."
+        elif len(known) == 1:
+            k = next(k for k, v in state.items() if v is not None)
+            other = "credit" if k == "trend" else "trend"
+            lead = (f"The {other} light is unknown right now; the {k} light is {'ON' if state[k] else 'off'}. Over all weeks since {risk['since'][:4]}, a {fall} fall followed "
+                    f"within 3 months in {base} of them.")
         else:
             word = {0: "No caution light is on.", 1: "One caution light is on.", 2: "Both caution lights are on."}[n_on]
-            lead = (f"{word} Since {risk['since'][:4]}, after weeks like this a {fall} fall followed within 3 months in {_frac_pct(combo['p_fall'])} of them "
-                    f"({combo['weeks']} weeks, a rough in-sample count), against {base} of all weeks." if combo else f"{word} Over all weeks, {base} were followed by a {fall} fall.")
+            lead = (f"{word} Since {risk['since'][:4]}, in weeks with {'no light on' if n_on == 0 else 'one light on' if n_on == 1 else 'both lights on'} a {fall} fall followed within "
+                    f"3 months in {_frac_pct(combo['p_fall'])} of them ({combo['weeks']} weeks, heavily overlapping), against {base} of all weeks."
+                    if combo else f"{word} Over all weeks, {base} were followed by a {fall} fall.")
         by = {c.get("lit"): c for c in risk.get("combo", []) if isinstance(c, dict) and c.get("p_fall") is not None}
         compare = ""
         if {0, 1, 2} <= set(by):
+            rising = by[0]["p_fall"] < by[1]["p_fall"] < by[2]["p_fall"]
+            w1, w2 = by[1]["weeks"], by[2]["weeks"]
+            on_p = (by[1]["p_fall"] * w1 + by[2]["p_fall"] * w2) / (w1 + w2) if (w1 + w2) else None
+            tail = ("So more lights on has meant a higher risk" if rising else "So the risk did not rise steadily with more lights on")
+            if on_p is not None and on_p < 0.5:
+                tail += ", and most weeks with a light on still had no such fall"
+            recent = ""
+            if all(by[k].get("recent_p") is not None for k in (0, 1, 2)) and risk.get("combo_recent_from"):
+                recent = (f" Since {str(risk['combo_recent_from'])[:4]} (after the 2008-09 crisis) the same comparison is {_frac_pct(by[0]['recent_p'])} with none on ({by[0]['recent_weeks']} weeks), "
+                          f"{_frac_pct(by[1]['recent_p'])} with one on ({by[1]['recent_weeks']}) and {_frac_pct(by[2]['recent_p'])} with both on ({by[2]['recent_weeks']}): "
+                          f"the high both-on figure comes almost entirely from the 2000-03 and 2008-09 bear markets.")
             compare = (f'<p class="sub"><b>The difference between on and off:</b> in past weeks with no light on, a {fall} fall followed within 3 months in {_frac_pct(by[0]["p_fall"])} of them; '
-                       f'with one light on, {_frac_pct(by[1]["p_fall"])}; with both on, {_frac_pct(by[2]["p_fall"])}. So on means a higher risk, and most weeks with a light on still had no such fall '
-                       f'(a rough, in-sample count).</p>')
+                       f'with one light on, {_frac_pct(by[1]["p_fall"])}; with both on, {_frac_pct(by[2]["p_fall"])}. {tail} (a rough, in-sample count of overlapping weeks).{esc(recent)}</p>')
         rows = ""
         for f in risk.get("falls", []):
             def cell(v):
-                return "not on" if v is None else f"on {int(v)} trading day{'s' if int(v) != 1 else ''} before"
+                return "not on" if v is None else "on at least 63 trading days before" if int(v) >= 63 else f"on {int(v)} trading day{'s' if int(v) != 1 else ''} before"
             rows += (f'<tr><td>{esc(_ym_name(f["peak"]))} ({esc(_frac_pct(f["drop"]))})</td><td>{esc(cell(f.get("trend")))}</td><td>{esc(cell(f.get("credit")))}</td></tr>')
         table = (f'<details class="detail"><summary class="more">Declines of {fall}+ from a market high since {esc(risk["since"][:4])}: was each light on beforehand?</summary>'
-                 f'<table class="ind"><thead><tr><th>Fall began</th><th>Market trend</th><th>Credit stress</th></tr></thead><tbody>{rows}</tbody></table>'
+                 f'<table class="ind"><thead><tr><th>Decline began</th><th>Market trend</th><th>Credit stress</th></tr></thead><tbody>{rows}</tbody></table>'
                  f'<p class="sub">"On N trading days before" means the light was on at least once in the 3 months before the market reached -{fall}, first on N trading days earlier. '
-                 f'A decline can contain smaller falls (for example 2010 and 2011 inside the 2007-09 decline); they are not listed separately.</p></details>') if rows else ""
+                 f'That is before the -{fall} mark, not necessarily before the peak: most often the light came on after the market had started falling. '
+                 f'A few smaller falls (for example 2003, 2010 and 2011) happened during recoveries and are not listed separately.</p></details>') if rows else ""
         off = (f"A light that is off is not an all-clear: a {fall} fall still followed in about {_frac_pct(by[0]['p_fall'])} of weeks with no light on." if 0 in by else
                "A light that is off is not an all-clear: falls still happened in some of those weeks.")
         cav = "".join(f"<li>{esc(t)}</li>" for t in [off] + list(plain.RISK_CAVEATS))
         act = "".join(f"<li>{esc(t)}</li>" for t in plain.RISK_ACTIONS)
-        return (f'<section class="card risk" aria-labelledby="rk"><p class="eyebrow" id="rk">Downside risk</p><h2>Chance of a {fall} fall in the next 3 months</h2>'
-                f'<p class="lead">{esc(lead)}</p><p class="sub">{esc(plain.RISK_INTRO)}</p><div class="lights">{lights}</div>{compare}{table}'
+        tested = f"We tested {int(risk['tests'])} signals; none met our bar for a reliable warning. These two were the closest." if risk.get("tests") else ""
+        asof = f" Data to {esc(_day_name(risk.get('asof')))}." if risk.get("asof") else ""
+        return (f'<section class="card risk" aria-labelledby="rk"><p class="eyebrow" id="rk">Downside risk</p><h2>How often a {fall} fall followed within 3 months</h2>'
+                f'<p class="lead">{esc(lead)}</p><p class="sub">{esc(plain.RISK_INTRO)} {esc(tested)}{asof}</p><div class="lights">{lights}</div>{compare}{table}'
                 f'<div class="cols"><div><h4>Keep in mind</h4><ul>{cav}</ul></div><div><h4>Sensible steps</h4><ul>{act}</ul></div></div>'
                 f'<p class="sub">{esc(NOT_ADVICE)}</p></section>')
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError, IndexError):
         return ""
+
+
+def _day_name(iso) -> str:
+    try:
+        return datetime.strptime(str(iso)[:10], "%Y-%m-%d").strftime("%d %b %Y").lstrip("0")
+    except ValueError:
+        return "?"
 
 
 NOT_ADVICE = "General education from past patterns, not a forecast and not personal financial advice."

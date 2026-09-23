@@ -66,7 +66,7 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   14 indicators for "the S&P 500 (total return) closes 10% or more below today's close within 63 trading days" (`data/downside_risk_test.txt`;
   `python downside_risk_test.py 0.15` runs the 15% version). No indicator met the pass bar (lift 2.5x, stable in both halves, warned before
   half the falls); these two were the closest, so the card is framed as "risk has been higher when on", never as a forecast. The trend light
-  mostly marks a decline already under way, and the credit light has not come on before any fall since 2007. All 14 tests are on the same 12 falls, so
+  mostly marks a decline already under way, and the credit light has not come on ahead of any fall since 2000 (in 2007 it came on about six weeks after the peak). All 14 tests are on the same 12 falls, so
   the ranges are wide; the on/off comparison by number of lights is exploratory and in-sample.
 - `validate.py <cycle>` tests a cycle against forward S&P 500 returns (`data/validation_<cycle>.txt`).
 

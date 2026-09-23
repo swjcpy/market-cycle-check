@@ -25,12 +25,16 @@ Design fixed BEFORE looking at results (nothing is tuned; every rule uses one fi
              at least half of the 10% falls that started in it (lit at least once in the 63 trading days before the fall reached -10%).
 There are only about 8-10 independent 10% falls since 1995, so every range is wide; a pass is a lead to watch, not proof.
 """
+import logging
+
 import numpy as np
 import pandas as pd
 
 import leadlag
 from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
 
+log = logging.getLogger(__name__)
+RECENT_FROM = "2010-01-01"   # the card also shows the record since the 2008-09 crisis, because the long bear markets dominate the full history
 HORIZON = 63               # trading days
 FALL = -0.10
 WINDOW = 1260              # trailing 5 years of trading days
@@ -215,12 +219,18 @@ def episodes(px: pd.Series, start: str = START, depth: float = 0.10) -> list:
 
 def warned(fl: pd.Series, px: pd.Series, cross: pd.Timestamp, horizon: int = HORIZON) -> tuple:
     """(lit at least once in the `horizon` trading days before the close reached -10%?, trading days from the first such day to that point)."""
+    first = first_lit_day(fl, px, cross, horizon)
+    if first is None:
+        return False, None
+    return True, int(px.index.get_loc(cross) - px.index.get_loc(first))
+
+
+def first_lit_day(fl: pd.Series, px: pd.Series, cross: pd.Timestamp, horizon: int = HORIZON):
+    """The first day the light was on within the `horizon` trading days before the close reached the fall (None if it was never on)."""
     i = px.index.get_loc(cross)
     win = fl.iloc[max(i - horizon, 0): i]
     lit_days = win.index[(win == 1).to_numpy()]
-    if not len(lit_days):
-        return False, None
-    return True, int(i - px.index.get_loc(lit_days[0]))
+    return lit_days[0] if len(lit_days) else None
 
 
 def share_warned(w: list, eps: list, first) -> float:
@@ -257,17 +267,21 @@ def panel(px: pd.Series, baa: pd.Series, fall: float = FALL) -> dict | None:
         thr = b.rolling(WINDOW, min_periods=WINDOW).quantile(PCT)
         ma = px.rolling(200, min_periods=200).mean()
         out = dict(fall=abs(fall), horizon_days=HORIZON, base=float(y.mean()), since=grid[0].strftime("%Y-%m"), weeks=len(grid), asof=px.index[-1].strftime("%Y-%m-%d"),
-                   flags={}, falls=[], combo=[])
+                   record_since=evaluated_from(y, pos).strftime("%Y-%m"), tests=N_TESTS, combo_recent_from=RECENT_FROM, flags={}, falls=[], combo=[])
+        high = px / px.cummax() - 1
         for key in ("trend", "credit"):
             r = evaluate(y, fl[key].loc[grid], pos)
             if r is None:
                 return None
             w = [warned(fl[key], px, cross) for _, cross, _, _ in eps]
+            firsts = [first_lit_day(fl[key], px, cross) for _, cross, _, _ in eps]
+            late = [(f, e) for f, e in zip(firsts, eps) if f is not None and f > e[0]]              # first on AFTER the market's peak: the fall had begun
             now = fl[key].iloc[-1]
             stale = key == "credit" and (px.index[-1] - baa_last).days > 10       # the spread has not updated for over 10 days: today's state is unknown
             row = dict(lit=None if pd.isna(now) or stale else bool(now), stale=stale, share_lit=r["share_lit"], p_lit=r["hit_lit"], p_off=r["hit_unlit"], lift=r["lift"], lift_lo=r["lift_lo"],
                        lift_h1=r["lift_h1"], lift_h2=r["lift_h2"], false_alarms_per_year=r["false_alarms_per_year"], warned=sum(a for a, _ in w), falls=len(w),
-                       last_warned=max((e[0].strftime("%Y-%m") for e, (a, _) in zip(eps, w) if a), default=None))
+                       last_warned=max((e[0].strftime("%Y-%m") for e, (a, _) in zip(eps, w) if a), default=None),
+                       after_peak=len(late), after_peak_dd=[round(float(high.loc[f]), 3) for f, _ in late])
             if key == "trend":
                 row["gap"] = float(px.iloc[-1] / ma.iloc[-1] - 1) if pd.notna(ma.iloc[-1]) else None
             else:
@@ -279,9 +293,12 @@ def panel(px: pd.Series, baa: pd.Series, fall: float = FALL) -> dict | None:
         n_lit = fl["trend"].loc[grid] + fl["credit"].loc[grid]                              # exploratory, in-sample: not one of the pre-specified tests
         for k in (0, 1, 2):
             m = (n_lit == k).to_numpy()
-            out["combo"].append(dict(lit=k, weeks=int(m.sum()), share=float(m.mean()), p_fall=float(y.to_numpy()[m].mean()) if m.sum() else None))
+            rec = m & (grid >= pd.Timestamp(RECENT_FROM))
+            out["combo"].append(dict(lit=k, weeks=int(m.sum()), share=float(m.mean()), p_fall=float(y.to_numpy()[m].mean()) if m.sum() else None,
+                                     recent_weeks=int(rec.sum()), recent_p=float(y.to_numpy()[rec].mean()) if rec.sum() else None))
         return out
     except Exception:  # noqa: BLE001  optional context: never break the page's numbers
+        log.exception("downside-risk panel failed")
         return None
 
 

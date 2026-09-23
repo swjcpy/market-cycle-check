@@ -163,7 +163,8 @@ def _downside_risk(daily: pd.Series | None) -> dict | None:
         return None
     try:
         return downside_risk_test.panel(daily, fetch_series("BAA10Y"))
-    except Exception:  # noqa: BLE001  optional context: never break the page's numbers
+    except Exception as e:  # noqa: BLE001  optional context: never break the page's numbers
+        print(f"warning: downside-risk data unavailable ({type(e).__name__}: {e})", file=sys.stderr)
         return None
 
 

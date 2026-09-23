@@ -20,6 +20,7 @@ MAX_CI_WIDTH = 12          # a wider 90% interval than this: timing is unclear
 N_BOOT, BLOCK = 300, 24
 BEAR = 0.20                # a fall of at least 20% from the running high
 TURN_WINDOW = 18           # months either side of the market's peak/trough in which the gauge's extreme is sought
+TURN_CLEAR = 12            # an extreme a year or more away is not called a turn near the fall (about 1 in 5 random extremes land there)
 MIN_INTERVAL_HALF = 3       # a reported range is never narrower than +-3 months (the bootstrap can collapse to one value on a smooth profile)
 STABILITY_BLOCKS = (12, 36)  # the verdict must also hold with other bootstrap block lengths, else it is called unclear
 MIN_MONTHS = 96            # not enough history for a meaningful profile
@@ -140,7 +141,7 @@ def turning_points(score: pd.Series, daily: pd.Series, first_date: pd.Timestamp)
                 continue
             d = win.idxmax() if fn == "max" else win.idxmin()
             off = (d.year - anchor.year) * 12 + (d.month - anchor.month)
-            edge = d in (win.index[0], win.index[-1]) or abs(off) >= TURN_WINDOW - 2   # at (or next to) the search window edge: no real turn
+            edge = d in (win.index[0], win.index[-1]) or abs(off) >= TURN_CLEAR   # at the window edge, or a year or more away: no clear turn
             row[kind] = dict(date=d.strftime("%Y-%m"), offset=int(off), value=round(float(win.loc[d]), 2), at_edge=bool(edge))
         rows.append(row)
     return rows

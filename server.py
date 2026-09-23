@@ -326,10 +326,58 @@ def _offset_text(g, kind: str) -> str:
     return f"{what} {when}"
 
 
-def _history_note(ll: dict) -> str:
-    n = len(ll["turns"]) if isinstance(ll.get("turns"), list) else 0
+def _history_note(ll: dict, n: int) -> str:
     m = ll.get("months")
-    return (f"This history covers {int(m) // 12} years and {n} such fall{'s' if n != 1 else ''} (20% or more)." if isinstance(m, int) and m > 0 else "")
+    return f"This history covers {int(m) // 12} years and {n} such fall{'s' if n != 1 else ''} (20% or more)." if isinstance(m, int) and m > 0 else ""
+
+
+def _clear_offsets(turns: list, kind: str) -> list:
+    """Month offsets (+: gauge later than the S&P 500) of the clear turns of one kind; unclear, missing or malformed ones are skipped."""
+    out = []
+    for t in turns:
+        g = t.get(kind) if isinstance(t, dict) else None
+        if isinstance(g, dict) and not g.get("at_edge"):
+            try:
+                out.append(int(g["offset"]))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+    return out
+
+
+def _range(offs: list) -> str:
+    lo, hi = min(abs(o) for o in offs), max(abs(o) for o in offs)
+    return f" (by {lo} month{'s' if lo != 1 else ''})" if lo == hi else f" (by {lo} to {hi} months)"
+
+
+def _groups(offs: list) -> list:
+    """Before / about the same time / after the S&P 500; a month either way is within the dating error (months vs days)."""
+    return [("before the S&P", [o for o in offs if o < -1]), ("at about the same time", [o for o in offs if -1 <= o <= 1]),
+            ("after the S&P", [o for o in offs if o > 1])]
+
+
+def _side_note(turns: list, kind: str, market: str, verb: str, total: int) -> str:
+    offs = _clear_offsets(turns, kind)
+    if not offs:
+        return f"No clear turn was found near the S&P's {market}s."
+    n = len(offs)
+    pieces = [f"{name} in {len(g)} fall{'s' if len(g) != 1 else ''}" + (_range(g) if not name.startswith("at about") else "") for name, g in _groups(offs) if g]
+    said = pieces[0] if len(pieces) == 1 else ", ".join(pieces[:-1]) + " and " + pieces[-1]
+    return f"At the S&P's {market}s, this gauge {verb} {said}, out of {n}{'' if n == total else ' with a clear turn'}."
+
+
+def turn_note(turns, total: int | None = None) -> str:
+    """One plain-language summary of the turning-point table: did the gauge top out / bottom out before or after the S&P 500?
+    Counts only, from the same numbers as the table; empty when there is nothing clear to say. `total`: the falls in the table."""
+    if not isinstance(turns, list):
+        return ""
+    total = sum(isinstance(t, dict) for t in turns) if total is None else total
+    peaks, troughs = _clear_offsets(turns, "peak"), _clear_offsets(turns, "trough")
+    if not total or not (peaks or troughs):
+        return ""
+    consistent = any(len(g) >= 3 and len(g) >= 0.75 * len(o) for o in (peaks, troughs) for _, g in _groups(o))
+    tail = (f" That is only {total} big fall{'s' if total != 1 else ''}, so it is a tendency to notice, not a rule." if consistent else
+            f" The order is mixed, and with only {total} big fall{'s' if total != 1 else ''} no pattern can be claimed.")
+    return _side_note(turns, "peak", "high", "topped out", total) + " " + _side_note(turns, "trough", "low", "bottomed out", total) + tail
 
 
 def leadlag_html(c: dict) -> str:
@@ -337,7 +385,7 @@ def leadlag_html(c: dict) -> str:
     ll = c.get("leadlag")
     if not isinstance(ll, dict) or not ll.get("headline"):
         return ""
-    rows = ""
+    rows, shown = "", []
     turns = ll.get("turns") if isinstance(ll.get("turns"), list) else []
     for t in turns:
         try:
@@ -345,12 +393,15 @@ def leadlag_html(c: dict) -> str:
             yr = a if a == b else f"{a}\u2013{b[2:]}"
             rows += (f'<tr><td>{esc(yr)} ({esc(str(t["drop"]))}%)</td><td>{esc(_offset_text(t.get("peak"), "peak"))}</td>'
                      f'<td>{esc(_offset_text(t.get("trough"), "trough"))}</td></tr>')
+            shown.append(t)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
-    table = (f'<table class="ind turns"><thead><tr><th>S&amp;P 500 fall</th><th>Gauge\'s highest reading within 18 months of the market\'s high</th>'
-             f'<th>Gauge\'s lowest reading within 18 months of the market\'s low</th></tr></thead><tbody>{rows}</tbody></table>') if rows else ""
-    return (f'<h4>Does it move before or after the market?</h4><p><b>{esc(str(ll["headline"]))}</b></p>{table}'
-            f'<p class="limit">{esc(plain.LEADLAG_INTRO)} {esc(_history_note(ll))}</p>')
+    table = (f'<table class="ind turns"><thead><tr><th>S&amp;P 500 fall</th><th>Gauge\'s high point within a year of the market\'s high</th>'
+             f'<th>Gauge\'s low point within a year of the market\'s low</th></tr></thead><tbody>{rows}</tbody></table>') if rows else ""
+    note = turn_note(shown, len(shown)) if rows else ""                       # from the same rows as the table
+    note_html = f'<p class="turnnote"><b>In short:</b> {esc(note)}</p>' if note else ""
+    return (f'<h4>Does it move before or after the market?</h4><p><b>{esc(str(ll["headline"]))}</b></p>{table}{note_html}'
+            f'<p class="limit">{esc(plain.LEADLAG_INTRO)} {esc(_history_note(ll, len(shown)))}</p>')
 
 
 def notice_html(c: dict) -> str:

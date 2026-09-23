@@ -48,7 +48,9 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   bootstrap, and where the market relationship is weak or unstable the same test is run against NBER recessions. Charts mark each
   S&P fall of 20% or more (dotted lines) and where the gauge topped out or bottomed out nearby (hollow circles). Each reading also
   carries the textbook "leading / coincident / lagging" tag (`plain.INDICATOR_TIMING`; Conference Board classification where one
-  exists, otherwise labelled as our judgement). All descriptive: nothing here feeds a score, and with only four such falls in the
+  exists, otherwise labelled as our judgement). An "In short" line under each table counts, from the same numbers, how often the gauge
+  topped out or bottomed out earlier, in the same month or later than the S&P (a high or low point a year or more from the fall is not
+  called a turn and is not counted; a month either way counts as the same time). All descriptive: nothing here feeds a score, and with only four such falls in the
   data every number is rough.
 - `validate.py <cycle>` tests a cycle against forward S&P 500 returns (`data/validation_<cycle>.txt`).
 

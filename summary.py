@@ -12,6 +12,7 @@ import pandas as pd
 
 import plain
 import leadlag
+import reversals
 from cycles import CYCLES
 from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
 from engine import _fetch, compute_cycle, cycle_weights
@@ -153,6 +154,23 @@ def _leadlag(key: str, df: pd.DataFrame, daily: pd.Series | None) -> dict | None
     except Exception:  # noqa: BLE001  optional context: never break the page's numbers
         return None
     return r
+
+
+def _reversal(s: pd.Series) -> dict | None:
+    """Trend turns of a gauge (see reversals.py), for the note on its card and the markers on its chart. None if unavailable."""
+    try:
+        s = s.dropna()
+        vals = [round(float(v), 2) for v in s.to_numpy()]              # the values the chart shows, so notes and markers agree with it
+        if len(vals) < 12:
+            return None
+        r = reversals.find_turns(vals)
+        ym = lambda i: s.index[i].strftime("%Y-%m")  # noqa: E731
+        turns = [dict(kind=k, date=ym(e), value=vals[e], confirmed=ym(c)) for k, e, c in r["turns"]]
+        run = None if r["extreme"] is None else dict(date=ym(r["extreme"]), value=vals[r["extreme"]])
+        return dict(threshold=reversals.THRESHOLD, trend=r["trend"], latest=turns[-1] if turns else None, run=run, now=vals[-1], asof=ym(-1),
+                    turns=[t for t in turns if t["date"] >= HISTORY_FROM[:7]])
+    except Exception:  # noqa: BLE001  optional context: never break the page's numbers
+        return None
 
 
 def _indicators(name: str, df: pd.DataFrame) -> list[dict]:
@@ -406,7 +424,7 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
             stage=label, stage_text=sentence, stage_display=_mild(label, b) if b else label,
             direction_word={"up": info["up"], "down": info["down"], "steady": "steady"}[direction(chg)], as_of=s.index[-1].strftime("%Y-%m-%d") if len(s) else None,
             is_partial=bool(df["is_partial"].iloc[-1]),
-            indicators=_indicators(key, df), leadlag=_leadlag(key, df, daily_sp),
+            indicators=_indicators(key, df), leadlag=_leadlag(key, df, daily_sp), reversal=_reversal(s),
             history=[[d.strftime("%Y-%m-%d"), round(float(v), 2)] for d, v in hist.items()],
             recessions=_spans(df["recession"].loc[HISTORY_FROM:]) if "recession" in df else [],
             you=info["hot_you"] if b in ("hot", "warm") else info["cold_you"] if b in ("cool", "cold") else None,
@@ -427,7 +445,7 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
                     stage=stage_label, stage_display=_mild(stage_label, hb), drivers=drivers, not_a_signal=plain.NOT_A_SIGNAL,
                     stage_text=stage_sentence, as_of=h.index[-1].strftime("%Y-%m-%d"),
                     history=[[d.strftime("%Y-%m-%d"), round(float(v), 2)] for d, v in h.loc[HISTORY_FROM:].items()],
-                    recessions=cycles[0]["recessions"], track=record, **plain.HEADLINE[hb])
+                    recessions=cycles[0]["recessions"], track=record, reversal=_reversal(h), **plain.HEADLINE[hb])
     notices = [n for n in (_rate_notice(),) if n]
     for c in cycles:
         c["notice"] = next((n["text"] for n in notices if n["key"] == c["key"]), None)

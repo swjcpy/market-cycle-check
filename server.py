@@ -404,6 +404,54 @@ def leadlag_html(c: dict) -> str:
             f'<p class="limit">{esc(plain.LEADLAG_INTRO)} {esc(_history_note(ll, len(shown)))}</p>')
 
 
+def _ym_name(ym) -> str:
+    try:
+        return datetime.strptime(str(ym)[:7] + "-01", "%Y-%m-%d").strftime("%b %Y")
+    except ValueError:
+        return "?"
+
+
+def _ym_index(ym) -> int:
+    y, m = str(ym)[:7].split("-")
+    return int(y) * 12 + int(m)
+
+
+def _lvl(v: float, digits: int = 1) -> str:
+    """A signed gauge level, never '-0.0'."""
+    t = f"{v:+.{digits}f}"
+    return t.replace("-", "").replace("+", "") if float(t) == 0 else t
+
+
+def reversal_note(r) -> str:
+    """Plain-language state of the gauge's trend turns: the latest confirmed turn, and how far it has come since (with the level that
+    would count as the next turn). Describes what already happened; empty when nothing is confirmed or the data is malformed."""
+    try:
+        th, now, latest, run, trend, asof = float(r["threshold"]), float(r["now"]), r["latest"], r["run"], r["trend"], r["asof"]
+        if not latest or trend not in ("up", "down") or not run:
+            return ""
+        val, run_v, high = float(latest["value"]), float(run["value"]), latest["kind"] == "high"
+        if not all(map(math.isfinite, (th, now, val, run_v))):
+            return ""
+        m = _ym_index(asof) - _ym_index(latest["confirmed"])
+        ago = "this month" if m <= 0 else "1 month ago" if m == 1 else f"{m} months ago" if m < 24 else f"about {m // 12} years ago"
+        first = (f"Latest turn: it {'peaked' if high else 'bottomed'} at {_lvl(val)} in {_ym_name(latest['date'])} and was confirmed turning "
+                 f"{'down' if high else 'up'} {ago}.")
+        if trend == "down":
+            since = ("Since then it has kept falling and is at its lowest point since the peak." if abs(now - run_v) < 0.005 else
+                     f"Since then it fell to {_lvl(run_v, 2)} and is now {now - run_v:.2f} above that low; it would need to rise to {_lvl(run_v + th, 2)} to count as a turn up.")
+        else:
+            since = ("Since then it has kept rising and is at its highest point since the low." if abs(now - run_v) < 0.005 else
+                     f"Since then it rose to {_lvl(run_v, 2)} and is now {run_v - now:.2f} below that high; it would need to fall to {_lvl(run_v - th, 2)} to count as a turn down.")
+        return f"{first} {since} This only describes what the gauge has already done."
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+        return ""
+
+
+def reversal_html(r) -> str:
+    note = reversal_note(r)
+    return f'<p class="reversal"><b>Trend turns:</b> {esc(note)}</p>' if note else ""
+
+
 def notice_html(c: dict) -> str:
     return f'<p class="limit"><b>Recent change.</b> {esc(str(c["notice"]))}</p>' if c.get("notice") else ""
 
@@ -462,7 +510,7 @@ def render_card(c: dict, market: dict | None = None) -> str:
       <div class="ch"><span class="ic">{esc(c["icon"])}</span><div><h3>{esc(c["title"])}</h3><div class="ask">{esc(c["asks"])}</div></div></div>
       <div class="cs">{pill(c["band"], c["band_word"])} <span class="stage">{ARROW_ICON[c["direction"]]} {esc(c["direction_word"])}</span></div>
       {thermometer(c["score"])}
-      <p class="mean">{esc(mean)}</p>{timing_line(c)}
+      <p class="mean">{esc(mean)}</p>{timing_line(c)}{reversal_html(c.get("reversal"))}
       <span class="more">Tap for details</span>
     </summary>
     <div class="detail">
@@ -556,7 +604,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
   <h2>{esc(h["title"])}</h2>
   {thermometer(h["score"], big=True)}
   <p class="lead">{esc(h["summary"])}</p>
-  <p class="sub">{esc(h["stage_text"])}</p>
+  <p class="sub">{esc(h["stage_text"])}</p>{reversal_html(h.get("reversal"))}
   <p class="drivers"><b>What is driving this:</b> {drivers}</p>
   <div class="cols"><div><h4>Sensible habits in any market</h4><ul>{do}</ul></div><div><h4>What to be careful about</h4><ul>{avoid}</ul></div></div>
   <p class="sub"><b>{esc(h["not_a_signal"])}</b> Past readings of these gauges did not reliably predict what stocks did next.</p>

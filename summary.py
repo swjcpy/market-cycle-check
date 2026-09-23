@@ -362,8 +362,46 @@ def _atomic_write(path, text: str) -> None:
         raise
 
 
-def _events(cycles: list[dict], now: datetime | None = None) -> list[dict]:
-    """Announce a band change only after it has been seen on CONFIRM_REFRESHES refreshes AND for MIN_CONFIRM_HOURS."""
+def _confirm(st: dict, value: str, now: datetime) -> bool:
+    """Track one observed value in `st` (band = the last confirmed value). True when a change to `value` has now been seen on CONFIRM_REFRESHES refreshes in a row
+    AND for MIN_CONFIRM_HOURS; `st` is then updated to the new value."""
+    if value == st["band"]:
+        st.update(pending=None, n=0, since=None)
+        return False
+    if st.get("pending") == value:
+        try:
+            st["n"] = int(st.get("n") or 0) + 1
+        except (TypeError, ValueError, OverflowError):
+            st["n"] = 1
+        try:
+            waited = (now - datetime.fromisoformat(st.get("since"))).total_seconds() / 3600
+        except (TypeError, ValueError):
+            waited = -1
+        if waited < 0:                       # missing, invalid or future clock (hand-edited state): start it now
+            waited = 0
+            st["since"] = now.isoformat()
+        if st["n"] >= CONFIRM_REFRESHES and waited >= MIN_CONFIRM_HOURS:
+            st.update(band=value, pending=None, n=0, since=None)
+            return True
+        return False
+    st.update(pending=value, n=1, since=now.isoformat())
+    return False
+
+
+def _risk_lights(risk) -> str | None:
+    """'both' if both caution lights are on, 'fewer' if at most one is, None if either is unknown or the data is missing."""
+    try:
+        a, b = risk["flags"]["trend"]["lit"], risk["flags"]["credit"]["lit"]
+    except (KeyError, TypeError):
+        return None
+    if a is None or b is None:
+        return None
+    return "both" if (a is True and b is True) else "fewer"
+
+
+def _events(cycles: list[dict], now: datetime | None = None, risk: dict | None = None) -> list[dict]:
+    """Announce a band change only after it has been seen on CONFIRM_REFRESHES refreshes AND for MIN_CONFIRM_HOURS. The same rule announces
+    the moment BOTH downside-risk caution lights are on (turning back off is recorded quietly)."""
     state = _load_json(STATE_FILE, {}, dict)
     events = _load_json(EVENTS_FILE, [], list)
     now = now or datetime.now(timezone.utc)
@@ -374,30 +412,22 @@ def _events(cycles: list[dict], now: datetime | None = None) -> list[dict]:
         st = state.get(c["key"])
         if not isinstance(st, dict) or "band" not in st:
             st = state[c["key"]] = dict(band=c["band"], pending=None, n=0, since=None)
-        if c["band"] == st["band"]:
-            st.update(pending=None, n=0, since=None)
-        elif st.get("pending") == c["band"]:
-            try:
-                st["n"] = int(st.get("n") or 0) + 1
-            except (TypeError, ValueError, OverflowError):
-                st["n"] = 1
-            try:
-                waited = (now - datetime.fromisoformat(st.get("since"))).total_seconds() / 3600
-            except (TypeError, ValueError):
-                waited = -1
-            if waited < 0:                       # missing, invalid or future clock (hand-edited state): start it now
-                waited = 0
-                st["since"] = now.isoformat()
-            if st["n"] >= CONFIRM_REFRESHES and waited >= MIN_CONFIRM_HOURS:
-                new.append(dict(date=now.strftime("%Y-%m-%d"), key=c["key"], title=c["title"], frm=st["band"], to=c["band"]))
-                st.update(band=c["band"], pending=None, n=0, since=None)
-        else:
-            st.update(pending=c["band"], n=1, since=now.isoformat())
+        frm = st["band"]
+        if _confirm(st, c["band"], now):
+            new.append(dict(date=now.strftime("%Y-%m-%d"), key=c["key"], title=c["title"], frm=frm, to=c["band"]))
+    lights = _risk_lights(risk)
+    if lights is not None:
+        rs = state.get("risk")
+        if not isinstance(rs, dict) or rs.get("band") not in ("both", "fewer"):
+            rs = state["risk"] = dict(band=lights, pending=None, n=0, since=None)
+        if _confirm(rs, lights, now) and lights == "both":
+            new.append(dict(date=now.strftime("%Y-%m-%d"), key="risk", title="Downside risk", frm="fewer than two caution lights on", to="both caution lights on",
+                            text="Downside risk: both caution lights are now on (status: Worse). Past patterns, not a forecast."))
     events = (new + events)[:50]
     _atomic_write(STATE_FILE, json.dumps(state))
     _atomic_write(EVENTS_FILE, json.dumps(events))
     for e in new:
-        _notify(f"{e['title']}: {e['frm']} to {e['to']}")
+        _notify(e.get("text") or f"{e['title']}: {e['frm']} to {e['to']}")
     return events
 
 
@@ -505,9 +535,10 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
         lasts = sorted(r["last"] for r in rows if r["last"])
         c["newest_data"], c["oldest_data"] = (lasts[-1], lasts[0]) if lasts else (None, None)
         c["input_missing"] = any(not r["last"] for r in rows)
+    risk = _downside_risk(daily_sp)
     return dict(schema=SCHEMA, generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), headline=headline, cycles=cycles,
-                market=_market(), notices=notices, agree=_agreement(cycles), events=_events(cycles) if record_events else [],
-                health=health, risk=_downside_risk(daily_sp), disclaimer=plain.DISCLAIMER)
+                market=_market(), notices=notices, agree=_agreement(cycles), events=_events(cycles, risk=risk) if record_events else [],
+                health=health, risk=risk, disclaimer=plain.DISCLAIMER)
 
 
 def write(out: dict) -> None:

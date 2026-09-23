@@ -129,7 +129,8 @@ Stop/start: `launchctl unload|load ~/Library/LaunchAgents/com.example.market-cyc
 ## Alerts
 
 A gauge changing band (Hot / Warm / Normal / Cool / Cold) must be seen on two refreshes in a row before it is announced. It
-then appears in the page banner (14 days) and as a macOS notification. Optional phone push via ntfy.sh is **off** by default;
+then appears in the page banner (14 days) and as a macOS notification. The same rule announces the moment BOTH downside-risk caution
+lights (S&P 500 below its 200-day average, Baa spread in its top 20%) are on together; the lights turning back off is recorded quietly. Optional phone push via ntfy.sh is **off** by default;
 set `MARKET_CYCLES_NTFY_TOPIC` in the plist to enable it (this sends the alert text to ntfy.sh, a third party).
 
 ## Development

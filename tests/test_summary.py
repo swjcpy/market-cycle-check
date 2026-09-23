@@ -26,6 +26,7 @@ def cheap_leadlag(request, monkeypatch):
     """summary.build() would otherwise run the (slow, bootstrapped) lead/lag analysis in every test that builds a summary."""
     if "real_leadlag" not in request.keywords:
         monkeypatch.setattr(summary, "_leadlag", lambda key, df, daily: None)
+    monkeypatch.setattr(summary, "_downside_risk", lambda daily: None)                # (the bootstrap behind the risk card is slow too; it has its own tests)
 
 
 def test_band_edges_and_groups():

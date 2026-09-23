@@ -25,6 +25,10 @@ def test_target_is_a_close_at_least_10_percent_below_today_within_the_horizon():
     edge = d.fall_target(_px([100, 100, 100, 89, 100, 100]), horizon=3)
     assert edge.iloc[0] == 1.0 and edge.iloc[1] == 1.0 and edge.iloc[2] == 1.0                        # the close on the LAST day of the window counts (i+1 .. i+horizon)
     assert d.fall_target(_px([89, 100, 100, 100, 100]), horizon=3).iloc[0] == 0.0                     # today's own close is not part of the window
+    nan = d.fall_target(_px([100, 100, np.nan, 100, 100, 100]), horizon=3)
+    assert nan.isna().all()                                                                            # a missing price in the window (or today): unknown, never 'no fall'
+    assert d.fall_target(_px([100, 89, 100, np.nan, 100, 100]), horizon=2).iloc[0] == 1.0             # a missing price AFTER the window does not matter
+    assert d.fall_target(_px([100, 100, 50, 100, 100, 100]), horizon=2).iloc[0] == 1.0
 
 
 def test_lagged_series_never_uses_a_later_observation():
@@ -231,3 +235,53 @@ def test_rate_and_trend_rules_use_their_stated_thresholds():
     assert d.flags(**{**inp, "t10y3m": yc})["Y1"].iloc[-1] == 0.0                                    # a positive slope, however small, is not inverted
     yc.iloc[-2:] = -0.01
     assert d.flags(**{**inp, "t10y3m": yc})["Y1"].iloc[-1] == 1.0                                    # ... so it shows the next day
+
+
+def test_trend_flags_are_unknown_until_their_history_exists():
+    px = _px(np.linspace(100, 200, 400))
+    s = d.s1(px)
+    assert s.iloc[:199].isna().all() and s.iloc[199:].notna().all()
+    inp = _plain_inputs()
+    f = d.flags(**inp)
+    assert f["S1"].iloc[:199].isna().all() and f["S2"].iloc[:251].isna().all() and f["S2"].iloc[251:].notna().all()
+
+
+def test_the_warned_share_counts_the_falls_inside_the_evaluated_period():
+    eps = [(pd.Timestamp("1997-01-01"), pd.Timestamp("1997-03-01"), None, -0.1), (pd.Timestamp("2000-01-01"), pd.Timestamp("2000-03-01"), None, -0.1),
+           (pd.Timestamp("2010-01-01"), pd.Timestamp("2010-03-01"), None, -0.1), (pd.Timestamp("2020-01-01"), pd.Timestamp("2020-03-01"), None, -0.1)]
+    w = [(True, 5), (False, None), (True, 9), (False, None)]
+    assert d.share_warned(w, eps, pd.Timestamp("1996-09-01")) == 0.5                                   # all four falls are inside
+    assert d.share_warned(w, eps, pd.Timestamp("2000-03-01")) == pytest.approx(1 / 3)                  # a fall whose -10% point is exactly on the first date counts
+    assert d.share_warned(w, eps, pd.Timestamp("2000-03-02")) == 0.5 and np.isnan(d.share_warned(w, eps, pd.Timestamp("2021-01-01")))
+
+
+def test_first_evaluated_date_matches_the_walk_forward_and_the_boundary_is_inclusive():
+    n = 120
+    idx = pd.bdate_range("2010-01-01", periods=n * 21)[::21][:n]                                       # samples exactly 21 trading days apart: 3 samples = 63 days
+    pos = {t: i * 21 for i, t in enumerate(idx)}
+    rng = np.random.default_rng(1)
+    y = pd.Series(rng.integers(0, 2, n).astype(float), index=idx)
+    lit = pd.Series(rng.integers(0, 2, n).astype(float), index=idx)
+    res = d.walk_forward(y, lit, pos)
+    assert d.evaluated_from(y, pos) == res.index[0]
+    t = idx[60]
+    known = [k for k in idx[:60] if pos[k] + d.HORIZON <= pos[t]]
+    assert idx[57] in known and idx[58] not in known                                                    # exactly 63 trading days earlier IS closed; 42 days earlier is not
+    assert res.loc[t, "base"] == pytest.approx(y.loc[known].mean())
+
+
+def test_an_outcome_one_day_short_of_closed_is_not_used():
+    n = 120
+    idx = pd.bdate_range("2010-01-01", periods=n * 31)[::31][:n]                                        # 31 trading days apart: two samples back is 62 days
+    pos = {t: i * 31 for i, t in enumerate(idx)}
+    y = pd.Series(np.tile([1.0, 0.0], n // 2), index=idx)
+    lit = pd.Series(0.0, index=idx)
+    t = idx[60]
+    y2 = y.copy()
+    y2.loc[idx[59]] = 1 - y2.loc[idx[59]]                                                                # 31 days earlier: still open
+    y2.loc[idx[58]] = 1 - y2.loc[idx[58]]                                                                # 62 days earlier: still open (needs 63)
+    a, b = d.walk_forward(y, lit, pos).loc[t], d.walk_forward(y2, lit, pos).loc[t]
+    assert a["base"] == b["base"] and a["model"] == b["model"]
+    y3 = y.copy()
+    y3.loc[idx[57]] = 1 - y3.loc[idx[57]]                                                                # 93 days earlier: closed, so it does count
+    assert d.walk_forward(y3, lit, pos).loc[t, "base"] != a["base"]

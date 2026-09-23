@@ -612,6 +612,81 @@ def safe_track(h: dict) -> str:
         return ""
 
 
+def _frac_pct(v, digits: int = 0) -> str:
+    v = float(v)
+    return f"{v * 100:.{digits}f}%" if math.isfinite(v) else "?"
+
+
+def _light(key: str, r: dict, risk: dict) -> str:
+    """One light: on / off / unknown, today's reading, what it means and its record."""
+    info = plain.RISK_FLAGS[key]
+    lit = r.get("lit")
+    state, cls = ("CAUTION (on)", "on") if lit is True else ("no caution (off)", "off") if lit is False else ("unknown", "unk")
+    if key == "trend":
+        gap = r.get("gap")
+        reading = (f"The S&P 500 is {abs(float(gap)) * 100:.1f}% {'above' if float(gap) >= 0 else 'below'} its 200-day average." if gap is not None else "")
+    else:
+        sp, th = r.get("spread"), r.get("threshold")
+        reading = (f"The Baa spread is {float(sp):.2f} points; the light turns on above {float(th):.2f}." if sp is not None and th is not None else "")
+        if r.get("stale"):
+            reading = "The spread has not updated for over 10 days, so today's state is unknown."
+    fall = f"{float(risk['fall']) * 100:.0f}%"
+    warned, falls = int(r["warned"]), int(r["falls"])
+    last = f" The latest fall it was on before began in {_ym_name(r['last_warned'])}." if r.get("last_warned") else " It was on before none of them."
+    record = (f"When on, a {fall} fall followed within 3 months in {_frac_pct(r['p_lit'])} of weeks; when off, {_frac_pct(r['p_off'])}. "
+              f"It was on at least once in the 3 months before {warned} of the {falls} falls.{last}")
+    return (f'<div class="light {cls}"><p class="lname"><span class="dot" aria-hidden="true"></span><b>{esc(info["name"])}: {state}</b></p>'
+            f'<p class="lq">{esc(info["question"])}</p><p class="lnow">{esc(reading)}</p><p class="sub">{esc(info["why"])}</p><p class="sub">{esc(record)}</p></div>')
+
+
+def risk_html(risk) -> str:
+    """The 'Downside risk' card: two lights, what they say today, and how they did over the past falls. Empty if the data is missing or malformed."""
+    if not isinstance(risk, dict):
+        return ""
+    try:
+        flags = risk["flags"]
+        fall = f"{float(risk['fall']) * 100:.0f}%"
+        lights = "".join(_light(k, flags[k], risk) for k in ("trend", "credit"))
+        known = [flags[k]["lit"] for k in ("trend", "credit") if flags[k].get("lit") is not None]
+        n_on = sum(1 for x in known if x)
+        combo = next((c for c in risk.get("combo", []) if c.get("lit") == n_on and c.get("p_fall") is not None), None) if len(known) == 2 else None
+        base = _frac_pct(risk["base"])
+        if len(known) < 2:
+            lead = f"One of the two lights is unknown right now. Over all weeks since {risk['since'][:4]}, a {fall} fall followed within 3 months in {base} of them."
+        else:
+            word = {0: "No caution light is on.", 1: "One caution light is on.", 2: "Both caution lights are on."}[n_on]
+            lead = (f"{word} Since {risk['since'][:4]}, after weeks like this a {fall} fall followed within 3 months in {_frac_pct(combo['p_fall'])} of them "
+                    f"({combo['weeks']} weeks, a rough in-sample count), against {base} of all weeks." if combo else f"{word} Over all weeks, {base} were followed by a {fall} fall.")
+        by = {c.get("lit"): c for c in risk.get("combo", []) if isinstance(c, dict) and c.get("p_fall") is not None}
+        compare = ""
+        if {0, 1, 2} <= set(by):
+            compare = (f'<p class="sub"><b>The difference between on and off:</b> in past weeks with no light on, a {fall} fall followed within 3 months in {_frac_pct(by[0]["p_fall"])} of them; '
+                       f'with one light on, {_frac_pct(by[1]["p_fall"])}; with both on, {_frac_pct(by[2]["p_fall"])}. So on means a higher risk, and most weeks with a light on still had no such fall '
+                       f'(a rough, in-sample count).</p>')
+        rows = ""
+        for f in risk.get("falls", []):
+            def cell(v):
+                return "not on" if v is None else f"on {int(v)} trading day{'s' if int(v) != 1 else ''} before"
+            rows += (f'<tr><td>{esc(_ym_name(f["peak"]))} ({esc(_frac_pct(f["drop"]))})</td><td>{esc(cell(f.get("trend")))}</td><td>{esc(cell(f.get("credit")))}</td></tr>')
+        table = (f'<details class="detail"><summary class="more">Declines of {fall}+ from a market high since {esc(risk["since"][:4])}: was each light on beforehand?</summary>'
+                 f'<table class="ind"><thead><tr><th>Fall began</th><th>Market trend</th><th>Credit stress</th></tr></thead><tbody>{rows}</tbody></table>'
+                 f'<p class="sub">"On N trading days before" means the light was on at least once in the 3 months before the market reached -{fall}, first on N trading days earlier. '
+                 f'A decline can contain smaller falls (for example 2010 and 2011 inside the 2007-09 decline); they are not listed separately.</p></details>') if rows else ""
+        off = (f"A light that is off is not an all-clear: a {fall} fall still followed in about {_frac_pct(by[0]['p_fall'])} of weeks with no light on." if 0 in by else
+               "A light that is off is not an all-clear: falls still happened in some of those weeks.")
+        cav = "".join(f"<li>{esc(t)}</li>" for t in [off] + list(plain.RISK_CAVEATS))
+        act = "".join(f"<li>{esc(t)}</li>" for t in plain.RISK_ACTIONS)
+        return (f'<section class="card risk" aria-labelledby="rk"><p class="eyebrow" id="rk">Downside risk</p><h2>Chance of a {fall} fall in the next 3 months</h2>'
+                f'<p class="lead">{esc(lead)}</p><p class="sub">{esc(plain.RISK_INTRO)}</p><div class="lights">{lights}</div>{compare}{table}'
+                f'<div class="cols"><div><h4>Keep in mind</h4><ul>{cav}</ul></div><div><h4>Sensible steps</h4><ul>{act}</ul></div></div>'
+                f'<p class="sub">{esc(NOT_ADVICE)}</p></section>')
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError, IndexError):
+        return ""
+
+
+NOT_ADVICE = "General education from past patterns, not a forecast and not personal financial advice."
+
+
 def render_track(track: dict | None, current_stage: str) -> str:
     if not track or not track["stages"]:
         return ""
@@ -686,6 +761,7 @@ def render(s: dict, refreshed: str | None, error: str | None) -> str:
   {chart_pair(h["history"], h["recessions"], "headline", s.get("market"), None, h.get("reversal"))}
   <p class="sub">The headline combines two gauges (lending and investor mood). Grey bands are recessions.</p>
 </section>
+{risk_html(s.get("risk"))}
 {safe_track(h)}
 <section class="card agree"><h3>Do the gauges agree?</h3><p class="lead">{esc(ag["headline"])}</p>{"<ul>" + notes + "</ul>" if notes else ""}<div class="grp">{groups}</div><p class="sub">{esc(ag.get("note", ""))}</p></section>
 <h2 class="sec">The eight cycles</h2>
@@ -718,7 +794,7 @@ h1{margin:0;font-size:1.5rem}h2{font-size:1.5rem;line-height:1.25;margin:.3rem 0
 .cols{display:grid;grid-template-columns:1fr;gap:0 24px}@media(min-width:720px){.cols{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr 1fr}}
 ul{margin:.3rem 0 .6rem;padding-left:1.2rem}li{margin:.25rem 0}
 .pill{display:inline-block;padding:3px 11px;border-radius:999px;border:1.5px solid var(--c,var(--bd));background:color-mix(in srgb,var(--c,var(--bd)) 16%,transparent);font-size:.85rem;font-weight:600;white-space:nowrap}
-.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl,.nojs .zctl{display:none}.zbtn{font:inherit;font-size:.8rem;color:var(--ink2);background:transparent;border:1px solid var(--bd);border-radius:999px;padding:3px 12px;min-height:30px;cursor:pointer}.zbtn.on{color:var(--ink);border-color:var(--line);font-weight:600}.zctl{align-items:center}.zlab{white-space:nowrap}.rmark{font-size:11px;fill:var(--line);visibility:hidden}.rtoggle{white-space:nowrap;cursor:pointer;font-size:.8rem}.rkey{font-size:.75rem}.rgl{color:var(--line)}body.norev .rlayer,body.norev .rkey{display:none!important}.chart{user-select:none;-webkit-user-select:none}.zhint{font-size:.75rem}
+.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl,.nojs .zctl{display:none}.zbtn{font:inherit;font-size:.8rem;color:var(--ink2);background:transparent;border:1px solid var(--bd);border-radius:999px;padding:3px 12px;min-height:30px;cursor:pointer}.zbtn.on{color:var(--ink);border-color:var(--line);font-weight:600}.zctl{align-items:center}.zlab{white-space:nowrap}.rmark{font-size:11px;fill:var(--line);visibility:hidden}.rtoggle{white-space:nowrap;cursor:pointer;font-size:.8rem}.rkey{font-size:.75rem}.rgl{color:var(--line)}.lights{display:grid;grid-template-columns:1fr;gap:10px;margin:.6rem 0}@media(min-width:720px){.lights{grid-template-columns:1fr 1fr}}.light{border:1px solid var(--bd);border-radius:12px;padding:10px 12px}.light p{margin:.25rem 0}.lname{font-size:1.02rem}.dot{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:8px;vertical-align:-1px;border:2px solid var(--normal)}.light.on .dot{background:var(--hot);border-color:var(--hot)}.light.off .dot{background:var(--cold);border-color:var(--cold)}.light.unk .dot{background:transparent}.lnow{font-weight:600}body.norev .rlayer,body.norev .rkey{display:none!important}.chart{user-select:none;-webkit-user-select:none}.zhint{font-size:.75rem}
 .mv{display:none}body[data-mview="yoy"] .mv-yoy,body[data-mview="fwd"] .mv-fwd,body[data-mview="dd"] .mv-dd,body[data-mview="px"] .mv-px{display:inline}body.nomkt .mlayer,body.nomkt .mkey,body.nomkt .mv{display:none!important}.mctl input{margin-right:4px}.drivers{margin:.4rem 0}
 .thermo{position:relative;height:12px;border-radius:8px;margin:12px 0 4px;background:linear-gradient(90deg,var(--cold),var(--cool) 30%,var(--normal) 50%,var(--warm) 70%,var(--hot))}
 .thermo.big{height:18px;border-radius:10px}.marker{position:absolute;top:-5px;width:6px;height:calc(100% + 10px);background:var(--ink);border:2px solid var(--surface);border-radius:4px;transform:translateX(-50%)}

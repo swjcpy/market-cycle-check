@@ -226,3 +226,19 @@ TIMING_TEXT = {
 TIMING_BASIS = {"index": "a Conference Board index component or close relative", "convention": "a widely used classification", "judgement": "our judgement, not measured here"}
 
 LEADLAG_INTRO = "Measured on our own history against the S&P 500 stock index, so treat every number as rough: only a handful of big market falls happened in that time."
+
+
+# ---- the "Downside risk" card (numbers come from data/summary.json; only wording lives here) ---------------------------------------------
+RISK_INTRO = ("Two simple caution lights, based on how the stock and bond markets behaved in the past. A light is ON when its condition is true today and OFF when it is not. ON means the risk has been higher, not that a fall will happen. The lights describe history and are not a forecast.")
+RISK_FLAGS = {
+    "trend": dict(name="Market trend", question="Is the S&P 500 below its 200-day average?",
+                  why="The 200-day average is the market's average price over about ten months. Below it, the market is in a downtrend. This light rarely comes on before a fall "
+                      "from a market high; mostly it marks a decline that is already under way."),
+    "credit": dict(name="Credit stress", question="Is the extra interest companies pay to borrow (the Baa spread) unusually high?",
+                   why="Lenders ask for more when they fear trouble. This light comes on in long credit crises (2000-03, 2008-09). It has been slow or silent before sudden falls."),
+}
+RISK_CAVEATS = ["Most weeks followed by a big fall were weeks when the market was already falling, so the lights are better at flagging risk during a decline than at catching its very start.",
+                "There have only been about a dozen such falls since 1995, and two long bear markets drive much of the record, so every number is rough."]
+RISK_ACTIONS = ["If a light is on, check that what you own matches how large a fall you could truly live with.",
+                "Avoid borrowing money to invest, and avoid big changes made out of fear.",
+                "A 10% fall is a normal event in stocks; being ready for one matters more than guessing when it comes."]

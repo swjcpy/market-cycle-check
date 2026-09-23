@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 import plain
+import downside_risk_test
 import leadlag
 import reversals
 from cycles import CYCLES
@@ -154,6 +155,16 @@ def _leadlag(key: str, df: pd.DataFrame, daily: pd.Series | None) -> dict | None
     except Exception:  # noqa: BLE001  optional context: never break the page's numbers
         return None
     return r
+
+
+def _downside_risk(daily: pd.Series | None) -> dict | None:
+    """The two downside-risk lights (S&P 500 below its 200-day average; Baa credit spread in its top 20%) and their record. None if unavailable."""
+    if daily is None:
+        return None
+    try:
+        return downside_risk_test.panel(daily, fetch_series("BAA10Y"))
+    except Exception:  # noqa: BLE001  optional context: never break the page's numbers
+        return None
 
 
 def _market_link(score: pd.Series, daily: pd.Series | None) -> dict | None:
@@ -491,7 +502,7 @@ def build(refresh: bool = False, today: pd.Timestamp | None = None, record_event
         c["input_missing"] = any(not r["last"] for r in rows)
     return dict(schema=SCHEMA, generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), headline=headline, cycles=cycles,
                 market=_market(), notices=notices, agree=_agreement(cycles), events=_events(cycles) if record_events else [],
-                health=health, disclaimer=plain.DISCLAIMER)
+                health=health, risk=_downside_risk(daily_sp), disclaimer=plain.DISCLAIMER)
 
 
 def write(out: dict) -> None:

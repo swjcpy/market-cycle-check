@@ -48,7 +48,10 @@ def fall_target(px: pd.Series, horizon: int = HORIZON, fall: float = FALL) -> pd
     v = px.to_numpy(float)
     out = np.full(len(v), np.nan)
     for i in range(len(v) - horizon):
-        out[i] = float(v[i + 1: i + horizon + 1].min() / v[i] - 1 <= fall + 1e-12)     # (a fall of exactly -10% counts despite float noise)
+        w = v[i + 1: i + horizon + 1]
+        if np.isnan(v[i]) or np.isnan(w).any():                                        # a missing price: the outcome is unknown, not 'no fall'
+            continue
+        out[i] = float(w.min() / v[i] - 1 <= fall + 1e-12)                            # (a fall of exactly -10% counts despite float noise)
     return pd.Series(out, index=px.index)
 
 
@@ -63,19 +66,31 @@ def elevated(s: pd.Series, window: int = WINDOW, q: float = PCT) -> pd.Series:
     return (s > s.rolling(window, min_periods=window).quantile(q)).where(s.rolling(window, min_periods=window).count() >= window)
 
 
+def s1(px: pd.Series) -> pd.Series:
+    """S1: the close is below its 200-day average (unknown until 200 days of history exist)."""
+    ma = px.rolling(200, min_periods=200).mean()
+    return (px < ma).astype(float).where(ma.notna())
+
+
+def c1(px: pd.Series, baa: pd.Series) -> pd.Series:
+    """C1: the Baa-minus-10-year spread (known with a one-day lag) is above the 80th percentile of its own trailing 5 years."""
+    return elevated(lagged(baa, px.index, 1))
+
+
 def flags(px: pd.Series, vix: pd.Series, baa: pd.Series, t10y3m: pd.Series, dff: pd.Series, nfci: pd.Series,
           credit: pd.Series, head: pd.Series) -> pd.DataFrame:
     """The 11 base indicators as booleans on px's trading days (NaN while an indicator's own history is too short). credit/head: monthly gauge
     scores indexed by Period('M')."""
     idx = px.index
     f = {}
-    f["S1"] = px < px.rolling(200, min_periods=200).mean()
-    f["S2"] = px <= 0.95 * px.rolling(252, min_periods=252).max()
+    f["S1"] = s1(px)
+    hi = px.rolling(252, min_periods=252).max()
+    f["S2"] = (px <= 0.95 * hi).astype(float).where(hi.notna())
     rv = np.log(px).diff().rolling(21).std() * np.sqrt(252)
     f["V1"] = elevated(rv)
     f["V2"] = elevated(lagged(vix, idx, 1))
     b = lagged(baa, idx, 1)
-    f["C1"] = elevated(b)
+    f["C1"] = c1(px, baa)
     f["C2"] = elevated(b - lagged(baa, idx, 1 + 91))
     n = lagged(nfci, idx, 7)
     f["N1"] = elevated(n - lagged(nfci, idx, 7 + 91))
@@ -118,6 +133,15 @@ def walk_forward(y: pd.Series, lit: pd.Series, pos: dict) -> pd.DataFrame:
         same = yk[lk == lit.loc[t]]
         rows.append((t, y.loc[t], yk.mean(), same.mean() if len(same) >= MIN_KNOWN else yk.mean()))
     return pd.DataFrame(rows, columns=["date", "y", "base", "model"]).set_index("date")
+
+
+def evaluated_from(y: pd.Series, pos: dict):
+    """The first date the walk-forward evaluation forecasts (it needs 2*MIN_KNOWN closed outcomes first)."""
+    dates = list(y.index)
+    for j, t in enumerate(dates):
+        if sum(1 for k in dates[:j] if pos[k] + HORIZON <= pos[t]) >= 2 * MIN_KNOWN:
+            return t
+    return dates[-1]
 
 
 def blocks(n: int, rng, block: int = BLOCK) -> np.ndarray:
@@ -199,9 +223,66 @@ def warned(fl: pd.Series, px: pd.Series, cross: pd.Timestamp, horizon: int = HOR
     return True, int(i - px.index.get_loc(lit_days[0]))
 
 
+def share_warned(w: list, eps: list, first) -> float:
+    """The share of falls inside the evaluated period (those whose -10% point is on or after `first`, the first evaluated date) that were warned."""
+    inside = [a for (a, _), e in zip(w, eps) if e[1] >= first]
+    return float(np.mean(inside)) if inside else float("nan")
+
+
 def passes(r: dict, episode_share: float) -> bool:
     return bool(r and np.isfinite(r["lift"]) and r["lift"] >= PASS_LIFT and r["lift_lo_strict"] > 1 and np.isfinite(r["lift_h1"]) and np.isfinite(r["lift_h2"])
                 and r["lift_h1"] >= PASS_HALF_LIFT and r["lift_h2"] >= PASS_HALF_LIFT and episode_share >= 0.5)
+
+
+def panel(px: pd.Series, baa: pd.Series, fall: float = FALL) -> dict | None:
+    """What the dashboard shows: the two chosen lights (S1 trend, C1 credit stress), each with its state today and its record, evaluated exactly
+    like the research test (weekly samples from 1995, walk-forward frequencies, 63 trading days, a fall of `fall`). None if the data is too short."""
+    try:
+        px = px.dropna()
+        baa_last = baa.dropna().index[-1]
+        if (px.index[-1] - baa_last).days > 400:                            # a series that stopped long ago says nothing about now (asof would carry it forward)
+            return None
+        fl = pd.DataFrame({"trend": s1(px).astype(float), "credit": c1(px, baa)})
+        fl["credit"] = fl["credit"].astype(float)
+        y_all = fall_target(px, fall=fall)
+        grid = weekly(px.index)
+        grid = grid[grid >= pd.Timestamp(START)]
+        grid = grid[(y_all.reindex(grid).notna() & fl.reindex(grid).notna().all(axis=1)).to_numpy()]
+        if len(grid) < 200:
+            return None
+        pos = {t: i for i, t in enumerate(px.index)}
+        y = y_all.loc[grid]
+        eps = episodes(px, depth=abs(fall))
+        b = lagged(baa, px.index, 1)
+        thr = b.rolling(WINDOW, min_periods=WINDOW).quantile(PCT)
+        ma = px.rolling(200, min_periods=200).mean()
+        out = dict(fall=abs(fall), horizon_days=HORIZON, base=float(y.mean()), since=grid[0].strftime("%Y-%m"), weeks=len(grid), asof=px.index[-1].strftime("%Y-%m-%d"),
+                   flags={}, falls=[], combo=[])
+        for key in ("trend", "credit"):
+            r = evaluate(y, fl[key].loc[grid], pos)
+            if r is None:
+                return None
+            w = [warned(fl[key], px, cross) for _, cross, _, _ in eps]
+            now = fl[key].iloc[-1]
+            stale = key == "credit" and (px.index[-1] - baa_last).days > 10       # the spread has not updated for over 10 days: today's state is unknown
+            row = dict(lit=None if pd.isna(now) or stale else bool(now), stale=stale, share_lit=r["share_lit"], p_lit=r["hit_lit"], p_off=r["hit_unlit"], lift=r["lift"], lift_lo=r["lift_lo"],
+                       lift_h1=r["lift_h1"], lift_h2=r["lift_h2"], false_alarms_per_year=r["false_alarms_per_year"], warned=sum(a for a, _ in w), falls=len(w),
+                       last_warned=max((e[0].strftime("%Y-%m") for e, (a, _) in zip(eps, w) if a), default=None))
+            if key == "trend":
+                row["gap"] = float(px.iloc[-1] / ma.iloc[-1] - 1) if pd.notna(ma.iloc[-1]) else None
+            else:
+                row["spread"] = float(b.iloc[-1]) if pd.notna(b.iloc[-1]) else None
+                row["threshold"] = float(thr.iloc[-1]) if pd.notna(thr.iloc[-1]) else None
+            out["flags"][key] = row
+        for e, wt, wc in zip(eps, [warned(fl["trend"], px, c) for _, c, _, _ in eps], [warned(fl["credit"], px, c) for _, c, _, _ in eps]):
+            out["falls"].append(dict(peak=e[0].strftime("%Y-%m"), drop=round(float(e[3]), 3), trend=wt[1] if wt[0] else None, credit=wc[1] if wc[0] else None))
+        n_lit = fl["trend"].loc[grid] + fl["credit"].loc[grid]                              # exploratory, in-sample: not one of the pre-specified tests
+        for k in (0, 1, 2):
+            m = (n_lit == k).to_numpy()
+            out["combo"].append(dict(lit=k, weeks=int(m.sum()), share=float(m.mean()), p_fall=float(y.to_numpy()[m].mean()) if m.sum() else None))
+        return out
+    except Exception:  # noqa: BLE001  optional context: never break the page's numbers
+        return None
 
 
 def load_inputs() -> dict:
@@ -245,8 +326,7 @@ def main(fall: float = FALL) -> None:
             lines.append(f"{k} {NAMES[k]:24s}  (too little history)")
             continue
         w = [warned(fl_all[k], px, cross) for _, cross, _, _ in eps]
-        w_ok = [x for x, e in zip(w, eps) if e[1] >= grid[0] + pd.Timedelta(days=int(365.25 * 8))]      # falls that started inside the evaluation period
-        share = float(np.mean([a for a, _ in w_ok])) if w_ok else float("nan")
+        share = share_warned(w, eps, evaluated_from(y, pos))
         p = passes(r, share if np.isfinite(share) else 0.0)
         if p:
             passed.append(k)

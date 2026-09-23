@@ -1,0 +1,274 @@
+"""Does any indicator warn, up to 3 months ahead, that the S&P 500 is about to fall 10%?  A pre-specified, walk-forward test (research script).
+
+Design fixed BEFORE looking at results (nothing is tuned; every rule uses one fixed definition):
+  target   : the S&P 500 (total return) closes at least 10% below today's close at some close in the next 63 trading days (~3 months).
+  samples  : the last trading day of each week, 1995 onward (indicators need 5 years of their own history first).
+  no look-ahead: FRED series are lagged (daily one day, the weekly NFCI seven days); the project's monthly gauges use the previous COMPLETE
+             month; 'elevated' means above the 80th percentile of the indicator's own trailing 5 years (1260 trading days).
+  candidates (14 tests):
+    S1 below200   close below its 200-day average
+    S2 dd5        close at least 5% below its 252-day high
+    V1 rvol       21-day realised volatility elevated
+    V2 vix        VIX elevated
+    C1 baa_level  Baa-minus-10-year spread elevated (the high-yield series on FRED now only goes back 3 years)
+    C2 baa_widen  its 63-day widening elevated
+    N1 nfci       13-week rise of the Chicago Fed financial conditions index elevated (its history is revised, so treat with suspicion)
+    Y1 inverted   10-year minus 3-month yield below zero
+    P1 fedup      fed funds rate up more than 1 point over 12 months
+    G1 credit_g   the credit gauge fell 0.3 or more over 3 months
+    G2 head_cold  the headline gauge is cool/cold (<= -0.35) and fell more than 0.25 over 6 months
+    K2/K3/K4      2 / 3 / 4 or more of the nine market-state, credit, rate and policy flags (S1..P1) lit at once
+  judged on   : walk-forward frequency forecasts (only outcomes already closed at each date), Brier skill vs the base rate, and lift = how much
+             likelier a fall is after a lit signal than on any date. 90% block-bootstrap ranges (26-week blocks); with 14 tests the 'passes'
+             column uses a stricter one-sided 0.05/14 bound.
+  PASS bar    : lift >= 2.5 AND the strict lower bound of lift > 1 AND lift >= 1.5 in both halves of the evaluation period AND warned before
+             at least half of the 10% falls that started in it (lit at least once in the 63 trading days before the fall reached -10%).
+There are only about 8-10 independent 10% falls since 1995, so every range is wide; a pass is a lead to watch, not proof.
+"""
+import numpy as np
+import pandas as pd
+
+import leadlag
+from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
+
+HORIZON = 63               # trading days
+FALL = -0.10
+WINDOW = 1260              # trailing 5 years of trading days
+PCT = 0.80
+START = "1995-01-01"
+MIN_KNOWN = 20             # samples of a state needed before its own frequency is trusted
+BLOCK, N_BOOT = 26, 2000   # weeks
+PASS_LIFT, PASS_HALF_LIFT = 2.5, 1.5
+N_TESTS = 14
+NINE = ("S1", "S2", "V1", "V2", "C1", "C2", "N1", "Y1", "P1")
+
+
+def fall_target(px: pd.Series, horizon: int = HORIZON, fall: float = FALL) -> pd.Series:
+    """1 if the close falls at least `fall` below today's close at some close in the next `horizon` trading days; NaN where the window is unfinished."""
+    v = px.to_numpy(float)
+    out = np.full(len(v), np.nan)
+    for i in range(len(v) - horizon):
+        out[i] = float(v[i + 1: i + horizon + 1].min() / v[i] - 1 <= fall + 1e-12)     # (a fall of exactly -10% counts despite float noise)
+    return pd.Series(out, index=px.index)
+
+
+def lagged(s: pd.Series, idx: pd.DatetimeIndex, days: int) -> pd.Series:
+    """The last observation known `days` calendar days before each date of idx (never a later one)."""
+    s = s.dropna().sort_index()
+    return pd.Series(s.asof(idx - pd.Timedelta(days=days)).to_numpy(), index=idx)
+
+
+def elevated(s: pd.Series, window: int = WINDOW, q: float = PCT) -> pd.Series:
+    """Above the q-quantile of its own trailing `window` observations (NaN until a full window exists -> False, with `valid` handled by the caller)."""
+    return (s > s.rolling(window, min_periods=window).quantile(q)).where(s.rolling(window, min_periods=window).count() >= window)
+
+
+def flags(px: pd.Series, vix: pd.Series, baa: pd.Series, t10y3m: pd.Series, dff: pd.Series, nfci: pd.Series,
+          credit: pd.Series, head: pd.Series) -> pd.DataFrame:
+    """The 11 base indicators as booleans on px's trading days (NaN while an indicator's own history is too short). credit/head: monthly gauge
+    scores indexed by Period('M')."""
+    idx = px.index
+    f = {}
+    f["S1"] = px < px.rolling(200, min_periods=200).mean()
+    f["S2"] = px <= 0.95 * px.rolling(252, min_periods=252).max()
+    rv = np.log(px).diff().rolling(21).std() * np.sqrt(252)
+    f["V1"] = elevated(rv)
+    f["V2"] = elevated(lagged(vix, idx, 1))
+    b = lagged(baa, idx, 1)
+    f["C1"] = elevated(b)
+    f["C2"] = elevated(b - lagged(baa, idx, 1 + 91))
+    n = lagged(nfci, idx, 7)
+    f["N1"] = elevated(n - lagged(nfci, idx, 7 + 91))
+    y = lagged(t10y3m, idx, 1)
+    f["Y1"] = (y < 0).where(y.notna())
+    d = lagged(dff, idx, 1)
+    f["P1"] = (d - lagged(dff, idx, 1 + 365) > 1.0).where(d.notna() & lagged(dff, idx, 1 + 365).notna())
+    prev = idx.to_period("M") - 1                                           # the previous COMPLETE month
+    cg = credit.reindex(prev).to_numpy() - credit.reindex(prev - 3).to_numpy()
+    hg = head.reindex(prev).to_numpy()
+    hd = hg - head.reindex(prev - 6).to_numpy()
+    f["G1"] = pd.Series(np.where(np.isnan(cg), np.nan, (cg <= -0.3).astype(float)), index=idx).astype(float)
+    f["G2"] = pd.Series(np.where(np.isnan(hg) | np.isnan(hd), np.nan, ((hg <= -0.35) & (hd < -0.25)).astype(float)), index=idx).astype(float)
+    return add_counts(pd.DataFrame({k: v.astype(float) for k, v in f.items()}, index=idx))
+
+
+def add_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """K2/K3/K4: 2, 3 or 4 or more of the nine market-state, credit, rate and policy flags lit at once (unknown while any of the nine is unknown)."""
+    cnt = df[list(NINE)].sum(axis=1, min_count=len(NINE))
+    for k in (2, 3, 4):
+        df[f"K{k}"] = (cnt >= k).astype(float).where(cnt.notna())
+    return df
+
+
+def weekly(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """The last trading day of each week."""
+    return pd.DatetimeIndex(idx.to_series().groupby(idx.to_period("W")).last().to_numpy())
+
+
+def walk_forward(y: pd.Series, lit: pd.Series, pos: dict) -> pd.DataFrame:
+    """Per sample date: the forecast from the frequency of outcomes in the same state among samples whose outcome had CLOSED by then
+    (their date + HORIZON trading days <= this date), and the plain base rate of the same samples."""
+    dates = list(y.index)
+    rows = []
+    for j, t in enumerate(dates):
+        known = [k for k in dates[:j] if pos[k] + HORIZON <= pos[t]]
+        if len(known) < 2 * MIN_KNOWN:
+            continue
+        yk, lk = y.loc[known].to_numpy(), lit.loc[known].to_numpy()
+        same = yk[lk == lit.loc[t]]
+        rows.append((t, y.loc[t], yk.mean(), same.mean() if len(same) >= MIN_KNOWN else yk.mean()))
+    return pd.DataFrame(rows, columns=["date", "y", "base", "model"]).set_index("date")
+
+
+def blocks(n: int, rng, block: int = BLOCK) -> np.ndarray:
+    return np.concatenate([(rng.integers(0, n) + np.arange(block)) % n for _ in range(int(np.ceil(n / block)))])[:n]
+
+
+def lift(y: np.ndarray, lit: np.ndarray) -> float:
+    if lit.sum() == 0 or y.mean() == 0:
+        return float("nan")
+    return float(y[lit == 1].mean() / y.mean())
+
+
+def evaluate(y: pd.Series, lit: pd.Series, pos: dict, seed: int = 0) -> dict:
+    """Walk-forward skill, lift (with a strict and a plain lower bound), recall, false alarms per year and the lift in the two halves."""
+    res = walk_forward(y, lit, pos)
+    if len(res) < 60:
+        return None
+    ev_y = res["y"].to_numpy()
+    ev_l = lit.loc[res.index].to_numpy()
+    b_base, b_model = (res["base"] - res["y"]) ** 2, (res["model"] - res["y"]) ** 2
+    rng = np.random.default_rng(seed)
+    sk, lf = [], []
+    for _ in range(N_BOOT):
+        i = blocks(len(res), rng)
+        sk.append(1 - b_model.to_numpy()[i].mean() / b_base.to_numpy()[i].mean())
+        lf.append(lift(ev_y[i], ev_l[i]))
+    lf = np.array([x for x in lf if np.isfinite(x)])
+    half = len(res) // 2
+    years = (res.index[-1] - res.index[0]).days / 365.25
+    runs = lit_runs(lit.loc[res.index])
+    hit_runs = sum(1 for r in runs if res["y"].loc[r].max() == 1)
+    out = dict(n=len(res), share_lit=float(ev_l.mean()), base=float(ev_y.mean()), hit_lit=float(ev_y[ev_l == 1].mean()) if ev_l.sum() else float("nan"),
+               hit_unlit=float(ev_y[ev_l == 0].mean()) if (ev_l == 0).sum() else float("nan"),
+               lift=lift(ev_y, ev_l), lift_lo=float(np.percentile(lf, 5)) if len(lf) else float("nan"),
+               lift_lo_strict=float(np.percentile(lf, 100 * 0.05 / N_TESTS)) if len(lf) else float("nan"),
+               skill=float(1 - b_model.mean() / b_base.mean()), skill_lo=float(np.percentile(sk, 5)), skill_hi=float(np.percentile(sk, 95)),
+               lift_h1=lift(ev_y[:half], ev_l[:half]), lift_h2=lift(ev_y[half:], ev_l[half:]),
+               recall=float(ev_l[ev_y == 1].mean()) if (ev_y == 1).sum() else float("nan"),
+               false_alarms_per_year=(len(runs) - hit_runs) / years, runs=len(runs))
+    return out
+
+
+def lit_runs(lit: pd.Series, gap: int = 4) -> list:
+    """Runs of lit samples (lists of dates); runs separated by fewer than `gap` unlit weeks are one run."""
+    runs, cur, off = [], [], 0
+    for t, v in lit.items():
+        if v == 1:
+            if cur and off >= gap:
+                runs.append(cur)
+                cur = []
+            cur.append(t)
+            off = 0
+        else:
+            off += 1
+    if cur:
+        runs.append(cur)
+    return runs
+
+
+def episodes(px: pd.Series, start: str = START) -> list:
+    """10% falls (peak, date the close first reached -10% from the peak, trough, depth) whose peak is after `start`."""
+    out = []
+    for pk, tr, drop in leadlag.bear_markets(px, 0.10):
+        if pk < pd.Timestamp(start):
+            continue
+        seg = px.loc[pk:tr]
+        cross = seg.index[(seg <= 0.9 * px.loc[pk]).to_numpy().argmax()]
+        out.append((pk, cross, tr, drop))
+    return out
+
+
+def warned(fl: pd.Series, px: pd.Series, cross: pd.Timestamp, horizon: int = HORIZON) -> tuple:
+    """(lit at least once in the `horizon` trading days before the close reached -10%?, trading days from the first such day to that point)."""
+    i = px.index.get_loc(cross)
+    win = fl.iloc[max(i - horizon, 0): i]
+    lit_days = win.index[(win == 1).to_numpy()]
+    if not len(lit_days):
+        return False, None
+    return True, int(i - px.index.get_loc(lit_days[0]))
+
+
+def passes(r: dict, episode_share: float) -> bool:
+    return bool(r and np.isfinite(r["lift"]) and r["lift"] >= PASS_LIFT and r["lift_lo_strict"] > 1 and np.isfinite(r["lift_h1"]) and np.isfinite(r["lift_h2"])
+                and r["lift_h1"] >= PASS_HALF_LIFT and r["lift_h2"] >= PASS_HALF_LIFT and episode_share >= 0.5)
+
+
+def load_inputs() -> dict:
+    import summary
+    from engine import compute_cycle
+    px = fetch_yahoo_daily("^SP500TR")
+    credit = summary._monthly(compute_cycle("credit")["credit_score"])
+    head = summary._monthly(summary._headline_series({c: compute_cycle(c)[f"{c}_score"] for c in summary.HEADLINE_CYCLES}).rename("h"))
+    return dict(px=px, vix=fetch_series("VIXCLS"), baa=fetch_series("BAA10Y"), t10y3m=fetch_series("T10Y3M"), dff=fetch_series("DFF"),
+                nfci=fetch_series("NFCI"), credit=credit, head=head)
+
+
+NAMES = {"S1": "below 200-day avg", "S2": ">=5% below 52w high", "V1": "realised vol high", "V2": "VIX high", "C1": "Baa spread high", "C2": "Baa spread widening",
+         "N1": "fin. conditions tightening", "Y1": "yield curve inverted", "P1": "fed funds +1pt in 12m", "G1": "credit gauge falling", "G2": "headline cool & falling",
+         "K2": "2+ of 9 lit", "K3": "3+ of 9 lit", "K4": "4+ of 9 lit"}
+
+
+def main() -> None:
+    inp = load_inputs()
+    px = inp["px"]
+    fl_all = flags(px, inp["vix"], inp["baa"], inp["t10y3m"], inp["dff"], inp["nfci"], inp["credit"], inp["head"])
+    y_all = fall_target(px)
+    pos = {t: i for i, t in enumerate(px.index)}
+    grid = weekly(px.index)
+    grid = grid[(grid >= pd.Timestamp(START))]
+    ok = y_all.reindex(grid).notna() & fl_all.reindex(grid).notna().all(axis=1)
+    grid = grid[ok.to_numpy()]
+    y = y_all.loc[grid]
+    eps = episodes(px)
+    lines = [f"Downside-risk test: S&P 500 (total return) closes {abs(FALL):.0%}+ below today's close within {HORIZON} trading days. "
+             f"Samples: {len(grid)} weeks, {grid[0]:%Y-%m-%d} to {grid[-1]:%Y-%m-%d}; base rate on all of them {y.mean():.1%}.",
+             f"{len(eps)} falls of 10% or more began after {START[:4]}: " + "; ".join(f"{pk:%Y-%m}" + f" ({dr:.0%})" for pk, _, _, dr in eps), ""]
+    lines.append(f"{'indicator':28s} {'lit':>5s} {'P(fall|lit)':>11s} {'P(fall|off)':>11s} {'lift':>5s} {'lo90':>5s} {'strict':>6s} {'1st half':>8s} {'2nd half':>8s} {'skill':>6s}"
+                 f" {'recall':>6s} {'FA/yr':>5s} {'falls warned':>12s}  PASS")
+    passed = []
+    detail = []
+    for k in NAMES:
+        lit = fl_all[k].loc[grid]
+        r = evaluate(y, lit, pos)
+        if r is None:
+            lines.append(f"{k} {NAMES[k]:24s}  (too little history)")
+            continue
+        w = [warned(fl_all[k], px, cross) for _, cross, _, _ in eps]
+        w_ok = [x for x, e in zip(w, eps) if e[1] >= grid[0] + pd.Timedelta(days=int(365.25 * 8))]      # falls that started inside the evaluation period
+        share = float(np.mean([a for a, _ in w_ok])) if w_ok else float("nan")
+        p = passes(r, share if np.isfinite(share) else 0.0)
+        if p:
+            passed.append(k)
+        lines.append(f"{k} {NAMES[k]:24s} {r['share_lit']:5.0%} {r['hit_lit']:11.1%} {r['hit_unlit']:11.1%} {r['lift']:5.1f} {r['lift_lo']:5.1f} {r['lift_lo_strict']:6.1f} "
+                     f"{r['lift_h1']:8.1f} {r['lift_h2']:8.1f} {r['skill']:+6.2f} {r['recall']:6.0%} {r['false_alarms_per_year']:5.1f} {sum(a for a, _ in w):>5d} of {len(w):<3d}   "
+                     f"{'PASS' if p else '-'}")
+        detail.append((k, w))
+    lines += ["", f"Passed all four parts of the bar: {', '.join(passed) if passed else 'none'}.  (Tests run: {len(NAMES)}; 'strict' = lower bound at one-sided {0.05 / N_TESTS:.2%}.)", "",
+              "Episode timeline: for each 10% fall, was the indicator lit at least once in the 63 trading days before the close reached -10%, and how many trading days before?",
+              f"{'fall':22s} " + " ".join(f"{k:>5s}" for k in NAMES)]
+    for e_i, (pk, cross, tr, dr) in enumerate(eps):
+        cells = []
+        for k, w in detail:
+            a, d = w[e_i]
+            cells.append(f"{(str(d) if a else '-'):>5s}")
+        lines.append(f"{pk:%Y-%m} peak, {dr:+.0%}".ljust(22) + " " + " ".join(cells))
+    lines += ["", "Reading guide: 'lift' = P(fall | lit) / base rate. 'FA/yr' = separate lit stretches per year with no 10% fall in the following 63 days. There are few independent "
+              "falls, so ranges are wide; several indicators are lit for long stretches, which makes lit-vs-off comparisons overlap. Nothing here was tuned on these results."]
+    text = "\n".join(lines)
+    (CACHE_DIR / "downside_risk_test.txt").write_text(text)
+    print(text)
+
+
+if __name__ == "__main__":
+    main()

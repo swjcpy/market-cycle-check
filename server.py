@@ -703,10 +703,68 @@ def risk_html(risk) -> str:
         tested = f"We tested {int(risk['tests'])} signals; none met our bar for a reliable warning. These two were the closest." if risk.get("tests") else ""
         asof = f" Data to {esc(_day_name(risk.get('asof')))}." if risk.get("asof") else ""
         return (f'<section class="card risk" aria-labelledby="rk"><p class="eyebrow" id="rk">Downside risk</p><h2>How often a {fall} fall followed within 3 months</h2>'
-                f'<p class="lead">{esc(lead)}</p><p class="sub">{esc(plain.RISK_INTRO)} {esc(tested)}{asof}</p><div class="lights">{lights}</div>{compare}{table}'
+                f'<p class="lead">{esc(lead)}</p><p class="sub">{esc(plain.RISK_INTRO)} {esc(tested)}{asof}</p><div class="lights">{lights}</div>{status_html(risk.get("status"), fall)}{compare}{table}'
                 f'<div class="cols"><div><h4>Keep in mind</h4><ul>{cav}</ul></div><div><h4>Sensible steps</h4><ul>{act}</ul></div></div>'
                 f'<p class="sub">{esc(NOT_ADVICE)}</p></section>')
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError, IndexError):
+        return ""
+
+
+def _below(v) -> str:
+    """'12% below its high' (or 'at its high')."""
+    x = abs(float(v))
+    return "at its high" if x < 0.005 else f"{_frac_pct(x)} below its high"
+
+
+def status_html(st, fall: str = "10%") -> str:
+    """The Watch / Worse / Recovering block: today's status, how long each light has been on, every past Worse stretch and the hypothetical result of the rule."""
+    if not isinstance(st, dict):
+        return ""
+    try:
+        state = st["state"]
+        name, meaning = plain.STATUS_NAMES[state], plain.STATUS_MEANING[state]
+        p = st["params"]
+        days = (f'Trend light on for {int(st["trend_days"])} trading day{"s" if int(st["trend_days"]) != 1 else ""} in a row; credit light on for {int(st["credit_days"])}; '
+                f'both on for {int(st["both_days"])}; no light on for {int(st["quiet_days"])}.')
+        extra = ""
+        if state == "worse":
+            quiet = int(st["quiet_days"])
+            so_far = f" (no light has been on for {quiet} so far)" if quiet > 0 else ""
+            extra = f" It has been Worse for {int(st['worse_days'])} trading days. It ends after no light has been on for {int(p['quiet_days'])} trading days in a row{so_far}."
+        eps = st.get("episodes") or []
+        n_ep = len(eps)
+        rows = ""
+        for e in eps:
+            end = "still going" if e.get("end") is None else _day_name(e["end"])
+            rows += (f'<tr><td>{esc(_day_name(e["start"]))} to {esc(end)}</td><td class="num">{int(e["days"])}</td><td>{esc(_below(e["dd_start"]))}</td>'
+                     f'<td>{esc(_below(e["worst"]))}</td><td>{esc(_below(e["dd_end"]))}</td>'
+                     f'<td class="num">{esc(("+" if float(e["change"]) >= 0 else "-") + _frac_pct(abs(float(e["change"]))))}</td></tr>')
+        table = (f'<table class="ind"><thead><tr><th>Worse stretch</th><th>Trading days</th><th>Market when it began</th><th>Worst point</th><th>Market when it ended</th>'
+                 f'<th>Market change during it</th></tr></thead><tbody>{rows}</tbody></table>') if rows else ""
+        fell = sum(1 for e in eps if float(e["change"]) < 0)
+        ends = [abs(float(e["dd_end"])) for e in eps if e.get("end") is not None]
+        summary_bits = ""
+        if n_ep:
+            summary_bits = (f'<p class="sub">Since {esc(str(st["since"])[:4])} there have been {n_ep} Worse stretches. In {fell} of them the market was lower when the stretch ended than the day after it began; '
+                            f'in {n_ep - fell} it was higher, so a rebound was still ahead. ')
+            if ends:
+                summary_bits += f'When they ended, the market was on average {sum(ends) / len(ends) * 100:.0f}% below its high (from {min(ends) * 100:.0f}% to {max(ends) * 100:.0f}%).</p>'
+            else:
+                summary_bits += "</p>"
+        bt = st.get("backtest") or {}
+        hyp = ""
+        if bt.get("rule") and bt.get("hold"):
+            cash = "the 3-month T-bill rate" if st.get("cash") == "tbill" else "0%"
+            hyp = (f'<p class="sub"><b>A hypothetical:</b> from {esc(str(st["since"])[:4])}, selling when a Worse stretch begins and buying back when it ends (each signal filled at the next day\'s close, '
+                   f'cash earning {cash}, no costs or taxes) would have returned {_frac_pct(bt["rule"]["cagr"], 1)} a year against {_frac_pct(bt["hold"]["cagr"], 1)} for staying invested, '
+                   f'with a worst fall of {_frac_pct(abs(float(bt["rule"]["worst"])))} against {_frac_pct(abs(float(bt["hold"]["worst"])))}, and {_frac_pct(st["share_worse"])} of the time out of the market. '
+                   f'The protection came from the {fell} stretches in which the market kept falling; the other {n_ep - fell} gave up part of a rebound. '
+                   f'With so few stretches, and the long bear markets doing most of the work, treat this as an illustration.</p>')
+        return (f'<div class="status s-{esc(state)}"><p class="eyebrow">Status</p><p class="slabel"><b>{esc(name)}</b></p><p>{esc(meaning)}{esc(extra)}</p>'
+                f'<p class="sub">{esc(days)}</p><p class="sub">{esc(plain.STATUS_RULES)}</p>'
+                f'<details class="detail"><summary class="more">Every Worse stretch since {esc(str(st["since"])[:4])}, and what the rule would have done</summary>{table}{summary_bits}{hyp}'
+                f'<p class="sub">{esc(plain.STATUS_NOT_ADVICE)}</p></details></div>')
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError, IndexError, ZeroDivisionError):
         return ""
 
 
@@ -827,7 +885,7 @@ h1{margin:0;font-size:1.5rem}h2{font-size:1.5rem;line-height:1.25;margin:.3rem 0
 .cols{display:grid;grid-template-columns:1fr;gap:0 24px}@media(min-width:720px){.cols{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr 1fr}}
 ul{margin:.3rem 0 .6rem;padding-left:1.2rem}li{margin:.25rem 0}
 .pill{display:inline-block;padding:3px 11px;border-radius:999px;border:1.5px solid var(--c,var(--bd));background:color-mix(in srgb,var(--c,var(--bd)) 16%,transparent);font-size:.85rem;font-weight:600;white-space:nowrap}
-.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl,.nojs .zctl{display:none}.zbtn{font:inherit;font-size:.8rem;color:var(--ink2);background:transparent;border:1px solid var(--bd);border-radius:999px;padding:3px 12px;min-height:30px;cursor:pointer}.zbtn.on{color:var(--ink);border-color:var(--line);font-weight:600}.zctl{align-items:center}.zlab{white-space:nowrap}.rmark{font-size:11px;fill:var(--line);visibility:hidden}.rtoggle{white-space:nowrap;cursor:pointer;font-size:.8rem}.rkey{font-size:.75rem}.rgl{color:var(--line)}.lights{display:grid;grid-template-columns:1fr;gap:10px;margin:.6rem 0}@media(min-width:720px){.lights{grid-template-columns:1fr 1fr}}.light{border:1px solid var(--bd);border-radius:12px;padding:10px 12px}.light p{margin:.25rem 0}.lname{font-size:1.02rem}.dot{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:8px;vertical-align:-1px;border:2px solid var(--normal)}.light.on .dot{background:var(--hot);border-color:var(--hot)}.light.off .dot{background:var(--cold);border-color:var(--cold)}.light.unk .dot{background:transparent}.lnow{font-weight:600}body.norev .rlayer,body.norev .rkey{display:none!important}.chart{user-select:none;-webkit-user-select:none}.zhint{font-size:.75rem}
+.stage{font-size:.92rem;color:var(--ink2)}.weight{display:block;margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:.82rem;color:var(--ink2);margin:6px 0 2px}.legend label{cursor:pointer;white-space:nowrap}.sw{display:inline-block;width:20px;height:0;border-top:3px solid var(--line);vertical-align:middle;margin-right:6px}.sw.mkt{border-top:2px dashed var(--ink2)}.sw.dots{border-top:2px dotted var(--ink2)}.tlabel{font-size:9px}.timing{margin:.2rem 0;font-size:.9rem;color:var(--ink2)}.turns td,.turns th{padding:5px 3px;font-size:.85rem}.nojs .mctl,.nojs .zctl{display:none}.zbtn{font:inherit;font-size:.8rem;color:var(--ink2);background:transparent;border:1px solid var(--bd);border-radius:999px;padding:3px 12px;min-height:30px;cursor:pointer}.zbtn.on{color:var(--ink);border-color:var(--line);font-weight:600}.zctl{align-items:center}.zlab{white-space:nowrap}.rmark{font-size:11px;fill:var(--line);visibility:hidden}.rtoggle{white-space:nowrap;cursor:pointer;font-size:.8rem}.rkey{font-size:.75rem}.rgl{color:var(--line)}.lights{display:grid;grid-template-columns:1fr;gap:10px;margin:.6rem 0}@media(min-width:720px){.lights{grid-template-columns:1fr 1fr}}.light{border:1px solid var(--bd);border-radius:12px;padding:10px 12px}.light p{margin:.25rem 0}.lname{font-size:1.02rem}.dot{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:8px;vertical-align:-1px;border:2px solid var(--normal)}.light.on .dot{background:var(--hot);border-color:var(--hot)}.light.off .dot{background:var(--cold);border-color:var(--cold)}.light.unk .dot{background:transparent}.lnow{font-weight:600}.status{border:1px solid var(--bd);border-left:5px solid var(--normal);border-radius:12px;padding:10px 14px;margin:.6rem 0}.status p{margin:.3rem 0}.status .eyebrow{margin:0}.slabel{font-size:1.25rem}.s-watch{border-left-color:var(--warm)}.s-worse{border-left-color:var(--hot)}.s-recovering{border-left-color:var(--cool)}.s-calm{border-left-color:var(--cold)}body.norev .rlayer,body.norev .rkey{display:none!important}.chart{user-select:none;-webkit-user-select:none}.zhint{font-size:.75rem}
 .mv{display:none}body[data-mview="yoy"] .mv-yoy,body[data-mview="fwd"] .mv-fwd,body[data-mview="dd"] .mv-dd,body[data-mview="px"] .mv-px{display:inline}body.nomkt .mlayer,body.nomkt .mkey,body.nomkt .mv{display:none!important}.mctl input{margin-right:4px}.drivers{margin:.4rem 0}
 .thermo{position:relative;height:12px;border-radius:8px;margin:12px 0 4px;background:linear-gradient(90deg,var(--cold),var(--cool) 30%,var(--normal) 50%,var(--warm) 70%,var(--hot))}
 .thermo.big{height:18px;border-radius:10px}.marker{position:absolute;top:-5px;width:6px;height:calc(100% + 10px);background:var(--ink);border:2px solid var(--surface);border-radius:4px;transform:translateX(-50%)}

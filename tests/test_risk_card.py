@@ -187,3 +187,72 @@ def test_the_card_sits_between_the_headline_and_the_track_record():
     assert 'class="card risk"' not in server.render(bad, "now", None)
     del bad["risk"]
     assert 'class="card risk"' not in server.render(bad, "now", None)
+
+
+# ---- the Watch / Worse / Recovering block ----------------------------------------------------------------------------------------------
+def _status(state="calm", **over):
+    ep = lambda s, e, days, a, w, z, ch: dict(start=s, end=e, days=days, dd_start=a, worst=w, dd_end=z, change=ch)          # noqa: E731
+    st = dict(state=state, trend_days=0, credit_days=0, both_days=0, quiet_days=115, worse_days=0, since="1991-01", cash="tbill",
+              params=dict(trend_days=42, quiet_days=5, recovering=63), share_worse=0.22, years=35.7,
+              episodes=[ep("1998-08-27", "1999-11-16", 308, -0.12, -0.19, 0.0, 0.396), ep("2000-04-14", "2003-04-21", 754, -0.111, -0.474, -0.39, -0.321),
+                        ep("2011-09-27", "2011-12-29", 65, -0.181, -0.233, -0.114, 0.099), ep("2022-05-20", None, 171, -0.18, -0.245, -0.14, 0.036)],
+              backtest=dict(rule=dict(cagr=0.121, worst=-0.222), hold=dict(cagr=0.114, worst=-0.553)))
+    st.update(over)
+    return st
+
+
+def _risk_with(st):
+    return _risk(status=st)
+
+
+def test_status_block_says_the_state_the_days_and_the_rules():
+    t = _text(server.risk_html(_risk_with(_status("calm"))))
+    assert "Status Calm No caution light is on." in t
+    assert "Trend light on for 0 trading days in a row; credit light on for 0; both on for 0; no light on for 115." in t
+    assert ("How it works: Watch means a light is on. Worse starts when the trend light has been on 42 trading days in a row, or when both lights are on together. "
+            "It ends once no light has been on for 5 trading days in a row, and the status then reads Recovering for up to 3 months while no light is on.") in t
+    assert "These are our own definitions" in t and "It is not a recommendation to buy or sell." in t and "a rule that helped in the past can fail in the future" in t
+    w = _text(server.risk_html(_risk_with(_status("watch", trend_days=1, credit_days=20, quiet_days=0))))
+    assert "Status Watch A light is on, but it has not lasted long enough" in w and "Trend light on for 1 trading day in a row; credit light on for 20; both on for 0; no light on for 0." in w
+    r = _text(server.risk_html(_risk_with(_status("recovering", quiet_days=9))))
+    assert "Status Recovering A Worse stretch ended within the last 3 months: no light has been on for 5 trading days in a row, and none is on now." in r
+
+
+def test_worse_says_how_long_and_what_ends_it():
+    t = _text(server.risk_html(_risk_with(_status("worse", trend_days=60, both_days=0, quiet_days=0, worse_days=18))))
+    assert "Status Worse The trend light has been on for 42 or more trading days in a row, or both lights are on. The situation has persisted or the lights agree. " in t
+    assert "It has been Worse for 18 trading days. It ends after no light has been on for 5 trading days in a row." in t and "so far" not in t
+    t2 = _text(server.risk_html(_risk_with(_status("worse", trend_days=0, quiet_days=3, worse_days=40))))
+    assert "It has been Worse for 40 trading days. It ends after no light has been on for 5 trading days in a row (no light has been on for 3 so far)." in t2
+
+
+def test_status_history_and_the_hypothetical_are_stated_with_their_caveats():
+    t = _text(server.risk_html(_risk_with(_status("calm"))))
+    assert "Every Worse stretch since 1991, and what the rule would have done" in t
+    assert "27 Aug 1998 to 16 Nov 1999 308 12% below its high 19% below its high at its high +40%" in t
+    assert "14 Apr 2000 to 21 Apr 2003 754 11% below its high 47% below its high 39% below its high -32%" in t
+    assert "20 May 2022 to still going 171 18% below its high 24% below its high 14% below its high +4%" in t
+    assert ("Since 1991 there have been 4 Worse stretches. In 1 of them the market was lower when the stretch ended than the day after it began; in 3 it was higher, "
+            "so a rebound was still ahead. When they ended, the market was on average 17% below its high (from 0% to 39%).") in t
+    assert ("A hypothetical: from 1991, selling when a Worse stretch begins and buying back when it ends (each signal filled at the next day's close, cash earning the 3-month T-bill rate, "
+            "no costs or taxes) would have returned 12.1% a year against 11.4% for staying invested, with a worst fall of 22% against 55%, and 22% of the time out of the market. "
+            "The protection came from the 1 stretches in which the market kept falling; the other 3 gave up part of a rebound. "
+            "With so few stretches, and the long bear markets doing most of the work, treat this as an illustration.") in t
+    z = _text(server.risk_html(_risk_with(_status(cash="zero"))))
+    assert "cash earning 0%," in z
+
+
+def test_status_block_is_left_out_or_partial_when_data_is_missing_and_never_breaks_the_card():
+    base = _text(server.risk_html(_risk()))
+    assert "Status" not in base and "Every Worse stretch" not in base                                     # an older summary.json without it
+    for bad in (None, "x", 5, {}, {"state": "nope"}, _status("worse", params=None), _status("calm", trend_days="x")):
+        h = server.risk_html(_risk_with(bad))
+        assert "Downside risk" in h and 'class="status' not in h                                        # the rest of the card still renders
+    none = _text(server.risk_html(_risk_with(_status(episodes=[], backtest={}))))
+    assert "Status Calm" in none and "Since 1991 there have been" not in none and "A hypothetical" not in none
+    partial = _text(server.risk_html(_risk_with(_status(backtest=dict(rule=dict(cagr=0.1, worst=-0.2))))))
+    assert "A hypothetical" not in partial
+    esc = _status("calm")
+    esc["since"] = "19<b>"
+    h = server.risk_html(_risk_with(esc))
+    assert "19<b" not in h and "19&lt;b" in h                                                     # escaped, not interpreted

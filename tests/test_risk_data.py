@@ -36,7 +36,7 @@ def _inputs(n=4500, seed=0, crash_end=False, stress_end=False):
 def test_panel_shape_and_the_state_today():
     px, baa = _inputs()
     p = d.panel(px, baa)
-    assert set(p) == {"fall", "horizon_days", "base", "since", "weeks", "asof", "record_since", "tests", "combo_recent_from", "flags", "falls", "combo"}
+    assert set(p) == {"fall", "horizon_days", "base", "since", "weeks", "asof", "record_since", "tests", "combo_recent_from", "flags", "falls", "combo", "status"}
     assert p["tests"] == d.N_TESTS == 14 and p["combo_recent_from"] == d.RECENT_FROM and p["record_since"] > p["since"]
     assert p["fall"] == 0.10 and p["horizon_days"] == 63 and 0 < p["base"] < 0.6 and p["since"] >= "1995-01" and p["asof"] == px.index[-1].strftime("%Y-%m-%d")
     assert set(p["flags"]) == {"trend", "credit"}

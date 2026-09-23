@@ -243,3 +243,18 @@ RISK_CAVEATS = ["Most weeks followed by a big fall were weeks when the market wa
 RISK_ACTIONS = ["If a light is on, check that what you own matches how large a fall you could truly live with.",
                 "Avoid borrowing money to invest, and avoid big changes made out of fear.",
                 "A 10% fall is a normal event in stocks; being ready for one matters more than guessing when it comes."]
+
+
+# ---- the Watch / Worse / Recovering status ------------------------------------------------------------------------------------------------
+STATUS_NAMES = {"calm": "Calm", "watch": "Watch", "worse": "Worse", "recovering": "Recovering"}
+STATUS_MEANING = {
+    "calm": "No caution light is on.",
+    "watch": "A light is on, but it has not lasted long enough (or the two lights do not agree) to count as Worse. In the past many of these were short flickers.",
+    "worse": "The trend light has been on for 42 or more trading days in a row, or both lights are on. The situation has persisted or the lights agree.",
+    "recovering": "A Worse stretch ended within the last 3 months: no light has been on for 5 trading days in a row, and none is on now.",
+}
+STATUS_RULES = ("How it works: Watch means a light is on. Worse starts when the trend light has been on 42 trading days in a row, or when both lights are on together. "
+                "It ends once no light has been on for 5 trading days in a row, and the status then reads Recovering for up to 3 months while no light is on. "
+                "These are our own definitions, chosen for how the lights behaved in the past, not an official measure.")
+STATUS_NOT_ADVICE = ("This shows how the lights and the rule behaved in the past. It is not a recommendation to buy or sell. Taxes, costs and your own situation matter, "
+                     "and a rule that helped in the past can fail in the future.")

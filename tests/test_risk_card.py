@@ -193,7 +193,7 @@ def test_the_card_sits_between_the_headline_and_the_track_record():
 def _status(state="calm", **over):
     ep = lambda s, e, days, a, w, z, ch: dict(start=s, end=e, days=days, dd_start=a, worst=w, dd_end=z, change=ch)          # noqa: E731
     st = dict(state=state, trend_days=0, credit_days=0, both_days=0, quiet_days=115, worse_days=0, since="1991-01", cash="tbill",
-              params=dict(trend_days=42, quiet_days=5, recovering=63), share_worse=0.22, years=35.7,
+              params=dict(trend_days=42, quiet_days=3, recovering=63), share_worse=0.22, years=35.7,
               episodes=[ep("1998-08-27", "1999-11-16", 308, -0.12, -0.19, 0.0, 0.396), ep("2000-04-14", "2003-04-21", 754, -0.111, -0.474, -0.39, -0.321),
                         ep("2011-09-27", "2011-12-29", 65, -0.181, -0.233, -0.114, 0.099), ep("2022-05-20", None, 171, -0.18, -0.245, -0.14, 0.036)],
               backtest=dict(rule=dict(cagr=0.121, worst=-0.222), hold=dict(cagr=0.114, worst=-0.553)))
@@ -210,20 +210,22 @@ def test_status_block_says_the_state_the_days_and_the_rules():
     assert "Status Calm No caution light is on." in t
     assert "Trend light on for 0 trading days in a row; credit light on for 0; both on for 0; no light on for 115." in t
     assert ("How it works: Watch means a light is on. Worse starts when the trend light has been on 42 trading days in a row, or when both lights are on together. "
-            "It ends once no light has been on for 5 trading days in a row, and the status then reads Recovering for up to 3 months while no light is on.") in t
+            "It ends once no light has been on for 3 trading days in a row, and the status then reads Recovering for up to 3 months while no light is on.") in t
     assert "These are our own definitions" in t and "It is not a recommendation to buy or sell." in t and "a rule that helped in the past can fail in the future" in t
     w = _text(server.risk_html(_risk_with(_status("watch", trend_days=1, credit_days=20, quiet_days=0))))
     assert "Status Watch A light is on, but it has not lasted long enough" in w and "Trend light on for 1 trading day in a row; credit light on for 20; both on for 0; no light on for 0." in w
     r = _text(server.risk_html(_risk_with(_status("recovering", quiet_days=9))))
-    assert "Status Recovering A Worse stretch ended within the last 3 months: no light has been on for 5 trading days in a row, and none is on now." in r
+    assert "Status Recovering A Worse stretch ended within the last 3 months: no light has been on for 3 trading days in a row, and none is on now." in r
 
 
 def test_worse_says_how_long_and_what_ends_it():
     t = _text(server.risk_html(_risk_with(_status("worse", trend_days=60, both_days=0, quiet_days=0, worse_days=18))))
     assert "Status Worse The trend light has been on for 42 or more trading days in a row, or both lights are on. The situation has persisted or the lights agree. " in t
-    assert "It has been Worse for 18 trading days. It ends after no light has been on for 5 trading days in a row." in t and "so far" not in t
-    t2 = _text(server.risk_html(_risk_with(_status("worse", trend_days=0, quiet_days=3, worse_days=40))))
-    assert "It has been Worse for 40 trading days. It ends after no light has been on for 5 trading days in a row (no light has been on for 3 so far)." in t2
+    assert "It has been Worse for 18 trading days. It ends after no light has been on for 3 trading days in a row." in t and "so far" not in t
+    t2 = _text(server.risk_html(_risk_with(_status("worse", trend_days=0, quiet_days=2, worse_days=40))))
+    assert "It has been Worse for 40 trading days. It ends after no light has been on for 3 trading days in a row (no light has been on for 2 so far)." in t2
+    t3 = _text(server.risk_html(_risk_with(_status("worse", params=dict(trend_days=21, quiet_days=7)))))
+    assert "on for 21 or more trading days in a row" in t3 and "ends after no light has been on for 7 trading days" in t3          # the numbers come from the data, not fixed text
 
 
 def test_status_history_and_the_hypothetical_are_stated_with_their_caveats():
@@ -245,7 +247,7 @@ def test_status_history_and_the_hypothetical_are_stated_with_their_caveats():
 def test_status_block_is_left_out_or_partial_when_data_is_missing_and_never_breaks_the_card():
     base = _text(server.risk_html(_risk()))
     assert "Status" not in base and "Every Worse stretch" not in base                                     # an older summary.json without it
-    for bad in (None, "x", 5, {}, {"state": "nope"}, _status("worse", params=None), _status("calm", trend_days="x")):
+    for bad in (None, "x", 5, {}, {"state": "nope"}, _status("worse", params=None), _status("calm", params=None), _status("calm", params=dict(trend_days="x", quiet_days=3)), _status("calm", trend_days="x")):
         h = server.risk_html(_risk_with(bad))
         assert "Downside risk" in h and 'class="status' not in h                                        # the rest of the card still renders
     none = _text(server.risk_html(_risk_with(_status(episodes=[], backtest={}))))

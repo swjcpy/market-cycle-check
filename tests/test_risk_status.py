@@ -32,42 +32,43 @@ def test_a_light_on_briefly_is_only_watch_and_a_credit_light_alone_is_never_wors
     assert set(r["states"]) == {"watch"} and r["episodes"] == []                                        # credit alone: 300 days of watch, never worse
 
 
-def test_the_trend_light_on_42_days_makes_it_worse_and_it_ends_after_5_quiet_days():
-    tr, cr = _lights([(0, 0, 5), (1, 0, 50), (0, 0, 4), (0, 0, 1), (0, 0, 70)])
+def test_the_trend_light_on_42_days_makes_it_worse_and_it_ends_after_3_quiet_days():
+    tr, cr = _lights([(0, 0, 5), (1, 0, 50), (0, 0, 2), (0, 0, 1), (0, 0, 70)])
     r = d.run_states(tr, cr)
     s = r["states"]
     assert s[5 + 40] == "watch" and s[5 + 41] == "worse"                                                   # the 42nd day on is the first Worse day
-    assert set(s[5 + 41: 5 + 50 + 4]) == {"worse"}                                                       # it stays Worse while the light goes off, until 5 quiet days
-    assert s[5 + 50 + 3] == "worse" and s[5 + 50 + 4] == "recovering"                                     # the 5th quiet day ends the Worse stretch
-    assert r["episodes"] == [(5 + 41, 5 + 50 + 4)]
-    assert set(s[5 + 50 + 4: 5 + 50 + 4 + 64]) == {"recovering"} and s[5 + 50 + 4 + 64] == "calm"       # Recovering lasts 63 days after the end, then calm
-    assert r["quiet_run"][-1] == 70 + 4 + 1 and r["states"][-1] == "calm"
+    assert set(s[5 + 41: 5 + 50 + 2]) == {"worse"}                                                       # it stays Worse while the light goes off, until 3 quiet days
+    assert s[5 + 50 + 1] == "worse" and s[5 + 50 + 2] == "recovering"                                     # the 3rd quiet day ends the Worse stretch
+    assert r["episodes"] == [(5 + 41, 5 + 50 + 2)]
+    end = 5 + 50 + 2
+    assert set(s[end: end + 64]) == {"recovering"} and s[end + 64] == "calm"                              # Recovering lasts 63 days after the end, then calm
+    assert r["quiet_run"][-1] == 2 + 1 + 70 and s[-1] == "calm"
 
 
-def test_both_lights_on_is_worse_at_once_and_a_light_returning_before_five_quiet_days_keeps_it_worse():
-    tr, cr = _lights([(0, 0, 3), (1, 1, 1), (0, 0, 4), (1, 0, 2), (0, 0, 5), (0, 0, 3)])
+def test_both_lights_on_is_worse_at_once_and_a_light_returning_before_three_quiet_days_keeps_it_worse():
+    tr, cr = _lights([(0, 0, 3), (1, 1, 1), (0, 0, 2), (1, 0, 2), (0, 0, 3), (0, 0, 3)])
     r = d.run_states(tr, cr)
     s = r["states"]
     assert s[3] == "worse"                                                                              # both on on day 4: no waiting
-    assert set(s[3:8 + 2]) == {"worse"}                                                                  # 4 quiet days, then the trend light again: still Worse
-    assert s[10] == "worse" and s[13] == "worse" and s[14] == "recovering" and s[15] == "recovering"      # 5 quiet days in a row (indexes 10-14) end it on the 5th
-    assert r["episodes"] == [(3, 14)]
-    again = _lights([(1, 1, 1), (0, 0, 5), (1, 1, 1)])
+    assert set(s[3:10]) == {"worse"}                                                                     # 2 quiet days, then the trend light again: still Worse
+    assert s[9] == "worse" and s[10] == "recovering"                                                     # 3 quiet days in a row (indexes 8-10) end it on the 3rd
+    assert r["episodes"] == [(3, 10)]
+    again = _lights([(1, 1, 1), (0, 0, 3), (1, 1, 1)])
     r2 = d.run_states(*again)
-    assert r2["episodes"] == [(0, 5), (6, None)] and r2["states"][6] == "worse" and r2["out"] is True   # a new stretch starts on the return; the last one is still going
+    assert r2["episodes"] == [(0, 3), (4, None)] and r2["states"][4] == "worse" and r2["out"] is True   # a new stretch starts on the return; the last one is still going
 
 
 def test_recovering_is_replaced_by_watch_when_a_light_comes_back_and_the_start_index_is_respected():
-    tr, cr = _lights([(1, 1, 1), (0, 0, 5), (0, 0, 10), (1, 0, 3), (0, 0, 3)])
+    tr, cr = _lights([(1, 1, 1), (0, 0, 3), (0, 0, 10), (1, 0, 3), (0, 0, 3)])
     r = d.run_states(tr, cr)
-    assert r["states"][5] == "recovering" and r["states"][15] == "recovering" and r["states"][16] == "watch" and r["states"][19] == "recovering"
+    assert r["states"][3] == "recovering" and r["states"][13] == "recovering" and r["states"][14] == "watch" and r["states"][17] == "recovering"
     r2 = d.run_states(tr, cr, start=10)
     assert r2["states"][:10] == [None] * 10 and r2["states"][10] == "calm"                              # nothing is decided before the start index
     assert d.run_states([], [])["states"] == []
 
 
 def test_parameters_are_the_agreed_ones():
-    assert (d.STATUS_TREND_DAYS, d.STATUS_QUIET_DAYS, d.STATUS_RECOVERING, d.STATUS_FROM) == (42, 5, 63, "1991-01-01")
+    assert (d.STATUS_TREND_DAYS, d.STATUS_QUIET_DAYS, d.STATUS_RECOVERING, d.STATUS_FROM) == (42, 3, 63, "1991-01-01")
 
 
 # ---- status() on prices ------------------------------------------------------------------------------------------------------
@@ -88,7 +89,7 @@ def test_status_reports_the_days_on_and_the_current_state():
     px, baa = _market(worse_end=True)
     st = d.status(px, baa)
     assert st["state"] == "worse" and st["trend_days"] >= 42 and st["worse_days"] > 0 and st["quiet_days"] == 0 and st["episodes"][-1]["end"] is None
-    assert st["params"] == dict(trend_days=42, quiet_days=5, recovering=63) and st["since"] == "1993-01" and st["cash"] == "zero"                    # (this synthetic history starts after STATUS_FROM)
+    assert st["params"] == dict(trend_days=42, quiet_days=3, recovering=63) and st["since"] == "1993-01" and st["cash"] == "zero"                    # (this synthetic history starts after STATUS_FROM)
     calm = d.status(*_market())
     assert calm["state"] in ("calm", "recovering") and calm["trend_days"] == 0 and calm["worse_days"] == 0
 
@@ -106,7 +107,7 @@ def test_episodes_match_the_states_and_the_simulated_rule():
         b = px.index.get_loc(pd.Timestamp(e["end"])) if e["end"] else len(px) - 1
         assert e["days"] == b - a and e["dd_start"] == pytest.approx(high.iloc[a]) and e["worst"] == pytest.approx(high.iloc[a:b + 1].min()) and e["dd_end"] == pytest.approx(high.iloc[b])
         assert e["change"] == pytest.approx(px.iloc[min(b + 1, len(px) - 1)] / px.iloc[a + 1] - 1)             # sold the day after the signal, bought back the day after
-    # independent simulation of the same rule: sell on the first Worse day, buy back on the first day after 5 quiet days
+    # independent simulation of the same rule: sell on the first Worse day, buy back on the first day after 3 quiet days
     ret = px.pct_change().fillna(0).to_numpy()
     held, out = np.ones(len(px)), False                                                              # a signal at the close of day t is filled at the close of t+1
     quiet, both, trr = 0, 0, 0
@@ -117,7 +118,7 @@ def test_episodes_match_the_states_and_the_simulated_rule():
         if i >= s0:
             if not out and (trr >= 42 or both >= 1):
                 out = True
-            elif out and quiet >= 5:
+            elif out and quiet >= 3:
                 out = False
             held[i] = 0.0 if out else 1.0
     pos = np.roll(held, 2)

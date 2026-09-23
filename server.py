@@ -722,8 +722,9 @@ def status_html(st, fall: str = "10%") -> str:
         return ""
     try:
         state = st["state"]
-        name, meaning = plain.STATUS_NAMES[state], plain.STATUS_MEANING[state]
         p = st["params"]
+        fmt = dict(trend_days=int(p["trend_days"]), quiet_days=int(p["quiet_days"]))
+        name, meaning = plain.STATUS_NAMES[state], plain.STATUS_MEANING[state].format(**fmt)
         days = (f'Trend light on for {int(st["trend_days"])} trading day{"s" if int(st["trend_days"]) != 1 else ""} in a row; credit light on for {int(st["credit_days"])}; '
                 f'both on for {int(st["both_days"])}; no light on for {int(st["quiet_days"])}.')
         extra = ""
@@ -761,7 +762,7 @@ def status_html(st, fall: str = "10%") -> str:
                    f'The protection came from the {fell} stretches in which the market kept falling; the other {n_ep - fell} gave up part of a rebound. '
                    f'With so few stretches, and the long bear markets doing most of the work, treat this as an illustration.</p>')
         return (f'<div class="status s-{esc(state)}"><p class="eyebrow">Status</p><p class="slabel"><b>{esc(name)}</b></p><p>{esc(meaning)}{esc(extra)}</p>'
-                f'<p class="sub">{esc(days)}</p><p class="sub">{esc(plain.STATUS_RULES)}</p>'
+                f'<p class="sub">{esc(days)}</p><p class="sub">{esc(plain.STATUS_RULES.format(**fmt))}</p>'
                 f'<details class="detail"><summary class="more">Every Worse stretch since {esc(str(st["since"])[:4])}, and what the rule would have done</summary>{table}{summary_bits}{hyp}'
                 f'<p class="sub">{esc(plain.STATUS_NOT_ADVICE)}</p></details></div>')
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError, IndexError, ZeroDivisionError):

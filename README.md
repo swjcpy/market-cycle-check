@@ -69,10 +69,10 @@ here; `data/` is git-ignored. Check each provider's terms before reusing the dat
   mostly marks a decline already under way, and the credit light has not come on ahead of any fall since 2000 (in 2007 it came on about six weeks after the peak). All 14 tests are on the same 12 falls, so
   the ranges are wide; the on/off comparison by number of lights is exploratory and in-sample.
 - The card also shows a Calm / Watch / Worse / Recovering status from the two lights: Watch = a light is on; Worse starts when the trend
-  light has been on 42 trading days in a row or both lights are on, and ends once no light has been on for 5 trading days in a row;
+  light has been on 42 trading days in a row or both lights are on, and ends once no light has been on for 3 trading days in a row;
   Recovering = the 3 months after a Worse stretch while no light is on. It lists every past Worse stretch (1991 on) and the hypothetical
   result of selling when one starts and buying back when it ends (a signal at one close is filled at the next day's close; cash earns
-  the T-bill rate; no costs or taxes). The definitions and the 5-day buy-back were chosen from a handful of variants on 8 stretches, and two
+  the T-bill rate; no costs or taxes). The definitions and the 3-day buy-back were chosen from a handful of variants on 8-9 stretches, and two
   bear markets (2000-03, 2007-09) supply the protection, so the card calls it an illustration, not a recommendation.
 - `validate.py <cycle>` tests a cycle against forward S&P 500 returns (`data/validation_<cycle>.txt`).
 

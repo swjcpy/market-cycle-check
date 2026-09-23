@@ -36,7 +36,7 @@ from data import CACHE_DIR, fetch_series, fetch_yahoo_daily
 log = logging.getLogger(__name__)
 RECENT_FROM = "2010-01-01"   # the card also shows the record since the 2008-09 crisis, because the long bear markets dominate the full history
 STATUS_TREND_DAYS = 42     # "Worse": the trend light has been on this many trading days in a row (or both lights are on)
-STATUS_QUIET_DAYS = 5      # a Worse stretch ends once no light has been on for this many trading days in a row
+STATUS_QUIET_DAYS = 3      # a Worse stretch ends once no light has been on for this many trading days in a row
 STATUS_RECOVERING = 63     # and the status reads "Recovering" for this many trading days afterwards, while no light is on
 STATUS_FROM = "1991-01-01"  # the credit light needs 5 years of Baa history, which starts in 1986
 HORIZON = 63               # trading days

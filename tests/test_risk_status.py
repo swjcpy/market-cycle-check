@@ -68,12 +68,12 @@ def test_recovering_is_replaced_by_watch_when_a_light_comes_back_and_the_start_i
 
 
 def test_parameters_are_the_agreed_ones():
-    assert (d.STATUS_TREND_DAYS, d.STATUS_QUIET_DAYS, d.STATUS_RECOVERING, d.STATUS_FROM) == (42, 3, 63, "1991-01-01")
+    assert (d.STATUS_TREND_DAYS, d.STATUS_QUIET_DAYS, d.STATUS_RECOVERING, d.STATUS_FROM) == (42, 3, 63, "1993-01-01")
 
 
 # ---- status() on prices ------------------------------------------------------------------------------------------------------
-def _market(n=4500, seed=1, worse_end=False):
-    idx = pd.bdate_range("1993-01-04", periods=n)
+def _market(n=4500, seed=1, worse_end=False, start="1993-01-04"):
+    idx = pd.bdate_range(start, periods=n)
     rng = np.random.default_rng(seed)
     r = rng.normal(0.0004, 0.009, n)
     for a in range(700, n - 300, 900):
@@ -85,7 +85,64 @@ def _market(n=4500, seed=1, worse_end=False):
     return px, baa
 
 
-def test_status_reports_the_days_on_and_the_current_state():
+def _independent(px, baa, cash_rate=0.0):
+    """The rule simulated day by day: sell on the first Worse day, buy back on the first day after 3 quiet days; a signal at the close of t is filled at the close of t+1."""
+    tr, cr = d.s1(px).fillna(0).to_numpy(), d.c1(px, baa).fillna(0).to_numpy()
+    s0 = int(np.searchsorted(px.index, pd.Timestamp(d.STATUS_FROM)))
+    ret = px.pct_change().fillna(0).to_numpy()
+    held, out, quiet, both, trr = np.ones(len(px)), False, 0, 0, 0
+    for i in range(len(px)):
+        trr = trr + 1 if tr[i] else 0
+        both = both + 1 if (tr[i] and cr[i]) else 0
+        quiet = quiet + 1 if not (tr[i] or cr[i]) else 0
+        if i >= s0:
+            if not out and (trr >= 42 or both >= 1):
+                out = True
+            elif out and quiet >= 3:
+                out = False
+            held[i] = 0.0 if out else 1.0
+    pos = np.roll(held, 2)
+    pos[:s0 + 2] = 1.0
+    eq = np.cumprod(1 + np.where(pos == 1.0, ret, cash_rate)[s0:])
+    yrs = (px.index[-1] - px.index[s0]).days / 365.25
+    return dict(cagr=eq[-1] ** (1 / yrs) - 1, worst=(eq / np.maximum.accumulate(eq) - 1).min(), share_out=1 - pos[s0:].mean(), years=yrs, s0=s0)
+
+
+def test_the_hypothetical_matches_an_independent_simulation_including_cash_and_a_late_start():
+    for start, n, worse_end in (("1993-01-04", 4500, False), ("1989-01-02", 5300, False), ("1993-01-04", 4500, True)):   # the second starts before STATUS_FROM; the third ends mid-stretch
+        px, baa = _market(n=n, start=start, worse_end=worse_end)
+        tb = pd.Series(5.0, index=pd.date_range("1988-01-01", px.index[-1], freq="MS"))
+        st = d.status(px, baa, cash=tb)
+        ind0, ind5 = _independent(px, baa), _independent(px, baa, cash_rate=0.05 / 252)
+        assert st["backtest"]["rule"]["cagr"] == pytest.approx(ind5["cagr"]) and st["backtest"]["rule"]["worst"] == pytest.approx(ind5["worst"])   # cash at 5% a year, 252 days
+        assert st["backtest"]["rule_nocash"]["cagr"] == pytest.approx(ind0["cagr"]) and st["backtest"]["rule_nocash"]["worst"] == pytest.approx(ind0["worst"])
+        assert st["share_worse"] == pytest.approx(ind0["share_out"]) and st["years"] == pytest.approx(ind0["years"])
+        assert st["since"] == px.index[ind0["s0"]].strftime("%Y-%m") and (ind0["s0"] > 0) == (start < d.STATUS_FROM)
+        assert st["backtest"]["rule"]["cagr"] > st["backtest"]["rule_nocash"]["cagr"]
+    assert d.status(px, baa)["backtest"]["rule"] == d.status(px, baa)["backtest"]["rule_nocash"]         # without a cash series both are the same
+    assert d.status(px, baa, cash=pd.Series(dtype=float))["cash"] == "zero"
+
+
+def test_episodes_say_what_started_them_and_days_worse_is_exact():
+    px, baa = _market(worse_end=True)
+    st = d.status(px, baa)
+    tr, cr = d.s1(px).fillna(0).to_numpy(), d.c1(px, baa).fillna(0).to_numpy()
+    for e in st["episodes"]:
+        a = px.index.get_loc(pd.Timestamp(e["start"]))
+        assert e["trigger"] == ("both" if (tr[a] and cr[a]) else "trend")
+    assert {e["trigger"] for e in st["episodes"]} <= {"both", "trend"}
+    assert st["state"] == "worse" and st["worse_days"] == len(px) - 1 - px.index.get_loc(pd.Timestamp(st["episodes"][-1]["start"]))
+
+
+def test_a_missing_light_value_counts_as_off():
+    tr, cr = _lights([(1, 0, 50)])
+    with_nan = tr.copy()
+    with_nan[:10] = np.nan
+    a, b = d.run_states(with_nan, cr), d.run_states(np.where(np.isnan(with_nan), 0.0, with_nan), cr)
+    assert a["states"] == b["states"] and a["episodes"] == b["episodes"] and a["trend_run"].tolist() == b["trend_run"].tolist()
+
+
+def test_the_status_reports_the_days_on_and_the_current_state():
     px, baa = _market(worse_end=True)
     st = d.status(px, baa)
     assert st["state"] == "worse" and st["trend_days"] >= 42 and st["worse_days"] > 0 and st["quiet_days"] == 0 and st["episodes"][-1]["end"] is None
@@ -143,3 +200,16 @@ def test_panel_carries_the_status():
     px, baa = _market()
     p = d.panel(px, baa)
     assert p["status"]["state"] == d.status(px, baa)["state"] and p["status"]["episodes"]
+
+
+def test_summary_passes_the_tbill_series_to_the_status(monkeypatch):
+    import summary
+    px, baa = _market()
+    tb = pd.Series(5.0, index=pd.date_range("1988-01-01", px.index[-1], freq="MS"))
+    monkeypatch.setattr(d, "N_BOOT", 50)
+    monkeypatch.setattr(summary, "fetch_series", lambda sid: {"BAA10Y": baa, "TB3MS": tb}[sid])
+    r = summary._downside_risk(px)
+    assert r["status"]["cash"] == "tbill" and r["status"]["backtest"]["rule"]["cagr"] > r["status"]["backtest"]["rule_nocash"]["cagr"]
+    monkeypatch.setattr(summary, "fetch_series", lambda sid: baa if sid == "BAA10Y" else (_ for _ in ()).throw(RuntimeError("no T-bill data")))
+    r0 = summary._downside_risk(px)
+    assert r0["status"]["cash"] == "zero" and r0["flags"]                                                 # cash then earns 0 and everything else still works

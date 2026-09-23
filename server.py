@@ -742,29 +742,38 @@ def status_html(st, fall: str = "10%") -> str:
                      f'<td class="num">{esc(("+" if float(e["change"]) >= 0 else "-") + _frac_pct(abs(float(e["change"]))))}</td></tr>')
         table = (f'<table class="ind"><thead><tr><th>Worse stretch</th><th>Trading days</th><th>Market when it began</th><th>Worst point</th><th>Market when it ended</th>'
                  f'<th>Market change during it</th></tr></thead><tbody>{rows}</tbody></table>') if rows else ""
-        fell = sum(1 for e in eps if float(e["change"]) < 0)
-        ends = [abs(float(e["dd_end"])) for e in eps if e.get("end") is not None]
+        closed = [e for e in eps if e.get("end") is not None]
+        fell = sum(1 for e in closed if float(e["change"]) < 0)
+        ends = [abs(float(e["dd_end"])) for e in closed]
+        yr = esc(str(st["since"])[:4])
         summary_bits = ""
         if n_ep:
-            summary_bits = (f'<p class="sub">Since {esc(str(st["since"])[:4])} there have been {n_ep} Worse stretches. In {fell} of them the market was lower when the stretch ended than the day after it began; '
-                            f'in {n_ep - fell} it was higher, so a rebound was still ahead. ')
+            still = n_ep - len(closed)
+            summary_bits = (f'<p class="sub">Since {yr} there have been {n_ep} Worse stretches{f" ({still} still going)" if still else ""}. '
+                            f'In {fell} of the {len(closed)} finished ones the market was lower when the stretch ended than the day after it began; in {len(closed) - fell} it was higher, '
+                            f'so a rebound was still ahead. ')
             if ends:
-                summary_bits += f'When they ended, the market was on average {sum(ends) / len(ends) * 100:.0f}% below its high (from {min(ends) * 100:.0f}% to {max(ends) * 100:.0f}%).</p>'
-            else:
-                summary_bits += "</p>"
+                summary_bits += f'When they ended, the market was on average {sum(ends) / len(ends) * 100:.0f}% below its high (from {min(ends) * 100:.0f}% to {max(ends) * 100:.0f}%). '
+            n_trend = sum(1 for e in eps if e.get("trigger") == "trend")
+            n_both = sum(1 for e in eps if e.get("trigger") == "both")
+            if n_both + n_trend == n_ep:
+                td = int(p["trend_days"])
+                never = f"; the {td}-day trend clause has not started a stretch by itself in this history" if n_trend == 0 else ""
+                summary_bits += f"{n_both} began with both lights on and {n_trend} with the trend light on for {td} days on its own{never}."
+            summary_bits += "</p>"
         bt = st.get("backtest") or {}
         hyp = ""
         if bt.get("rule") and bt.get("hold"):
             cash = "the 3-month T-bill rate" if st.get("cash") == "tbill" else "0%"
-            hyp = (f'<p class="sub"><b>A hypothetical:</b> from {esc(str(st["since"])[:4])}, selling when a Worse stretch begins and buying back when it ends (each signal filled at the next day\'s close, '
-                   f'cash earning {cash}, no costs or taxes) would have returned {_frac_pct(bt["rule"]["cagr"], 1)} a year against {_frac_pct(bt["hold"]["cagr"], 1)} for staying invested, '
+            nocash = (f' ({_frac_pct(bt["rule_nocash"]["cagr"], 1)} if cash earned nothing)' if bt.get("rule_nocash") and st.get("cash") == "tbill" else "")
+            hyp = (f'<p class="sub"><b>A hypothetical:</b> from {yr}, selling when a Worse stretch begins and buying back when it ends (each signal filled at the next day\'s close, '
+                   f'cash earning {cash}, no costs or taxes) would have returned {_frac_pct(bt["rule"]["cagr"], 1)} a year{nocash} against {_frac_pct(bt["hold"]["cagr"], 1)} for staying invested, '
                    f'with a worst fall of {_frac_pct(abs(float(bt["rule"]["worst"])))} against {_frac_pct(abs(float(bt["hold"]["worst"])))}, and {_frac_pct(st["share_worse"])} of the time out of the market. '
-                   f'The protection came from the {fell} stretches in which the market kept falling; the other {n_ep - fell} gave up part of a rebound. '
-                   f'With so few stretches, and the long bear markets doing most of the work, treat this as an illustration.</p>')
+                   f'Most of the small edge in yearly return is interest on the cash, so the smaller worst fall is the main effect, and it depends on a few stretches: '
+                   f'where the market ended higher, the rule gave up part of the rebound. The settings were chosen after looking at this same history, so treat all of this as an illustration.</p>')
         return (f'<div class="status s-{esc(state)}"><p class="eyebrow">Status</p><p class="slabel"><b>{esc(name)}</b></p><p>{esc(meaning)}{esc(extra)}</p>'
-                f'<p class="sub">{esc(days)}</p><p class="sub">{esc(plain.STATUS_RULES.format(**fmt))}</p>'
-                f'<details class="detail"><summary class="more">Every Worse stretch since {esc(str(st["since"])[:4])}, and what the rule would have done</summary>{table}{summary_bits}{hyp}'
-                f'<p class="sub">{esc(plain.STATUS_NOT_ADVICE)}</p></details></div>')
+                f'<p class="sub">{esc(days)}</p><p class="sub">{esc(plain.STATUS_RULES.format(**fmt))}</p><p class="sub">{esc(plain.STATUS_NOT_ADVICE)}</p>'
+                f'<details class="detail"><summary class="more">Every Worse stretch since {yr}, and what the rule would have done</summary>{table}{summary_bits}{hyp}</details></div>')
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError, IndexError, ZeroDivisionError):
         return ""
 

@@ -38,7 +38,7 @@ RECENT_FROM = "2010-01-01"   # the card also shows the record since the 2008-09 
 STATUS_TREND_DAYS = 42     # "Worse": the trend light has been on this many trading days in a row (or both lights are on)
 STATUS_QUIET_DAYS = 3      # a Worse stretch ends once no light has been on for this many trading days in a row
 STATUS_RECOVERING = 63     # and the status reads "Recovering" for this many trading days afterwards, while no light is on
-STATUS_FROM = "1991-01-01"  # the credit light needs 5 years of Baa history, which starts in 1986
+STATUS_FROM = "1993-01-01"  # the credit light needs 5 years of its own history on the S&P 500 trading calendar, which starts in January 1988
 HORIZON = 63               # trading days
 FALL = -0.10
 WINDOW = 1260              # trailing 5 years of trading days
@@ -357,7 +357,7 @@ def status(px: pd.Series, baa: pd.Series, cash: pd.Series | None = None) -> dict
         eps = []
         for a, b in rs["episodes"]:
             sell, buy = min(a + 1, n - 1), min((b if b is not None else n - 1) + 1, n - 1)
-            eps.append(dict(start=idx[a].strftime("%Y-%m-%d"), end=None if b is None else idx[b].strftime("%Y-%m-%d"), days=int((b if b is not None else n - 1) - a),
+            eps.append(dict(trigger="both" if rs["both_run"][a] >= 1 else "trend", start=idx[a].strftime("%Y-%m-%d"), end=None if b is None else idx[b].strftime("%Y-%m-%d"), days=int((b if b is not None else n - 1) - a),
                             dd_start=float(high[a]), worst=float(high[a:(b if b is not None else n - 1) + 1].min()), dd_end=float(high[b if b is not None else n - 1]),
                             change=float(pv[buy] / pv[sell] - 1)))
         held = np.ones(n)                                                                        # the position decided at each close: out from the sell signal until the buy signal
@@ -366,8 +366,9 @@ def status(px: pd.Series, baa: pd.Series, cash: pd.Series | None = None) -> dict
         pos = np.roll(held, 2)                                                                   # signal at the close of day t, fill at the close of t+1, first return earned on t+2
         pos[:s0 + 2] = 1.0
         ret = px.pct_change().fillna(0).to_numpy()
-        c = np.zeros(n) if cash is None else cash.reindex(idx.union(cash.index)).ffill().reindex(idx).shift(21).fillna(0).to_numpy() / 100 / 252
+        c = np.zeros(n) if cash is None or not cash.notna().any() else cash.reindex(idx.union(cash.index)).ffill().reindex(idx).shift(21).fillna(0).to_numpy() / 100 / 252
         strat = np.where(pos == 1.0, ret, c)
+        strat0 = np.where(pos == 1.0, ret, 0.0)                                                   # the same rule if cash earned nothing (how much of the edge is interest)
         yrs = (idx[-1] - idx[s0]).days / 365.25
 
         def summ(r):
@@ -376,9 +377,9 @@ def status(px: pd.Series, baa: pd.Series, cash: pd.Series | None = None) -> dict
         cur = rs["states"][-1]
         i = n - 1
         out = dict(state=cur, trend_days=int(rs["trend_run"][i]), credit_days=int(rs["credit_run"][i]), both_days=int(rs["both_run"][i]), quiet_days=int(rs["quiet_run"][i]),
-                   worse_days=(i - rs["episodes"][-1][0]) if rs["out"] else 0, since=idx[s0].strftime("%Y-%m"), cash="tbill" if cash is not None else "zero",
+                   worse_days=(i - rs["episodes"][-1][0]) if rs["out"] else 0, since=idx[s0].strftime("%Y-%m"), cash="tbill" if cash is not None and cash.notna().any() else "zero",
                    params=dict(trend_days=STATUS_TREND_DAYS, quiet_days=STATUS_QUIET_DAYS, recovering=STATUS_RECOVERING), episodes=eps,
-                   share_worse=float(1 - pos[s0:].mean()), years=float(yrs), backtest=dict(rule=summ(strat), hold=summ(ret)))
+                   share_worse=float(1 - pos[s0:].mean()), years=float(yrs), backtest=dict(rule=summ(strat), rule_nocash=summ(strat0), hold=summ(ret)))
         return out
     except Exception:  # noqa: BLE001  optional context: never break the page's numbers
         log.exception("status failed")
